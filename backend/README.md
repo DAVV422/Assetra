@@ -1,16 +1,22 @@
 # Assetra Backend
 
-Capa de integracion entre el dashboard y los contratos Soroban.
+API Express + TypeScript que desacopla el dashboard de los contratos Soroban.
 
-## Responsabilidades
+## Incluye
 
-- Exponer una API estable para el frontend.
-- Implementar AssetraClient y MockAssetraClient.
-- Preparar tipos compartidos, validaciones y manejo de errores.
-- Construir, simular y enviar transacciones a Stellar Testnet.
-- Mantener fixtures reproducibles para la factura, wallets y estados de la demo.
-- Ocultar al frontend los detalles del ABI y las direcciones de contratos.
+- API REST para activos, ciclo de vida, participantes y documentos.
+- Validación de entradas con Zod y errores HTTP consistentes.
+- `AssetraClient` como frontera estable de integración.
+- `MockAssetraClient` y fixtures reproducibles para desarrollo paralelo.
+- Esqueleto `StellarAssetraClient` para incorporar ABI e IDs de contratos.
+- Pruebas de integración con Vitest y Supertest.
 
-## Trabajo paralelo
+## Ejecución
 
-MockAssetraClient sera la primera implementacion. La integracion real con Stellar mantendra la misma interfaz, permitiendo que frontend y contracts avancen sin bloquearse.
+```bash
+npm run dev -w backend
+npm run test -w backend
+npm run build -w backend
+```
+
+La API inicia en `http://localhost:4000`. Consulta [docs/API.md](docs/API.md) para las rutas disponibles. La implementación real de Stellar conservará la misma interfaz, evitando cambios en el frontend cuando Persona 1 entregue los contratos.
