@@ -22,9 +22,15 @@ const typeLabels: Record<AssetType, string> = {
   invoice: "Factura", bond: "Bono", "real-estate": "Inmueble", commodity: "Commodity", "carbon-credit": "Crédito de carbono"
 };
 
-const money = (value: number, currency = "USD") => new Intl.NumberFormat("es-BO", {
-  style: "currency", currency, maximumFractionDigits: 0
-}).format(value);
+const money = (value: number, currency = "USD") => {
+  const code = currency.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code)) {
+    return `${new Intl.NumberFormat("es-BO", { maximumFractionDigits: 0 }).format(value)} ${code}`;
+  }
+  return new Intl.NumberFormat("es-BO", {
+    style: "currency", currency: code, maximumFractionDigits: 0
+  }).format(value);
+};
 const date = (value: string) => new Intl.DateTimeFormat("es-BO", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(value));
 
 function Mark() {
