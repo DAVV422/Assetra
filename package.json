@@ -1,0 +1,13 @@
+{
+  "name": "assetra",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": ["frontend", "backend"],
+  "scripts": {
+    "dev": "concurrently -n WEB,API -c blue,magenta \"npm run dev -w frontend\" \"npm run dev -w backend\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "test": "npm run test -w backend && npm run test -w frontend",
+    "typecheck": "npm run typecheck -w backend && npm run typecheck -w frontend"
+  },
+  "devDependencies": { "concurrently": "^9.2.1" }
+}
