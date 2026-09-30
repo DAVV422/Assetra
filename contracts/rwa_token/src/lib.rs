@@ -16,6 +16,7 @@ pub enum TokenError {
     AssetNotActive = 6,
     AlreadyInitialized = 7,
     NotInitialized = 8,
+    InvalidAmount = 9,
 }
 
 #[contracttype]
@@ -65,6 +66,11 @@ impl PermissionedRwaToken {
     pub fn mint(e: Env, admin: Address, to: Address, amount: i128) -> Result<(), TokenError> {
         admin.require_auth();
 
+        // Control de Seguridad 1: Monto positivo
+        if amount <= 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
         let stored_admin: Address = e
             .storage()
             .instance()
@@ -80,7 +86,6 @@ impl PermissionedRwaToken {
             return Err(TokenError::AssetPaused);
         }
 
-        // Cross-contract call a RwaRegistry para verificar que el receptor está autorizado
         let registry_addr: Address = e
             .storage()
             .instance()
@@ -93,6 +98,14 @@ impl PermissionedRwaToken {
             .ok_or(TokenError::NotInitialized)?;
 
         let registry_client = rwa_registry::RwaRegistryClient::new(&e, &registry_addr);
+
+        // Control de Seguridad 2: El activo debe estar en estado Active (1) en RwaRegistry
+        let asset = registry_client.get_asset(&asset_id);
+        if asset.status != (rwa_registry::AssetStatus::Active as u32) {
+            return Err(TokenError::AssetNotActive);
+        }
+
+        // Control de Seguridad 3: El receptor debe estar en la whitelist
         if !registry_client.is_authorized(&asset_id, &to) {
             return Err(TokenError::ReceiverNotAuthorized);
         }
@@ -114,6 +127,11 @@ impl PermissionedRwaToken {
     pub fn transfer(e: Env, from: Address, to: Address, amount: i128) -> Result<(), TokenError> {
         from.require_auth();
 
+        // Control de Seguridad 1: Monto positivo
+        if amount <= 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
         let is_paused: bool = e.storage().instance().get(&DataKey::IsPaused).unwrap_or(false);
         if is_paused {
             return Err(TokenError::AssetPaused);
@@ -132,17 +150,22 @@ impl PermissionedRwaToken {
 
         let registry_client = rwa_registry::RwaRegistryClient::new(&e, &registry_addr);
 
-        // Validación de Emisor
+        // Control de Seguridad 2: El activo debe estar en estado Active (1) en RwaRegistry
+        let asset = registry_client.get_asset(&asset_id);
+        if asset.status != (rwa_registry::AssetStatus::Active as u32) {
+            return Err(TokenError::AssetNotActive);
+        }
+
+        // Control de Seguridad 3: Validación estricta de Compliance (Emisor y Receptor)
         if !registry_client.is_authorized(&asset_id, &from) {
             return Err(TokenError::SenderNotAuthorized);
         }
 
-        // Validación de Receptor (Regla de oro de compliance de la demo)
         if !registry_client.is_authorized(&asset_id, &to) {
             return Err(TokenError::ReceiverNotAuthorized);
         }
 
-        // Validar saldo
+        // Control de Seguridad 4: Validar saldo suficiente
         let from_key = DataKey::Balance(from.clone());
         let from_balance: i128 = e.storage().persistent().get(&from_key).unwrap_or(0);
         if from_balance < amount {
@@ -162,6 +185,10 @@ impl PermissionedRwaToken {
 
     pub fn burn(e: Env, from: Address, amount: i128) -> Result<(), TokenError> {
         from.require_auth();
+
+        if amount <= 0 {
+            return Err(TokenError::InvalidAmount);
+        }
 
         let from_key = DataKey::Balance(from.clone());
         let from_balance: i128 = e.storage().persistent().get(&from_key).unwrap_or(0);

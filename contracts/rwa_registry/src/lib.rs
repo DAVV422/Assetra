@@ -38,6 +38,7 @@ pub enum WalletStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AssetData {
     pub issuer: Address,
+    pub compliance_officer: Address,
     pub asset_type: Symbol,
     pub metadata_uri: String,
     pub main_hash: BytesN<32>,
@@ -67,10 +68,12 @@ pub struct RwaRegistry;
 
 #[contractimpl]
 impl RwaRegistry {
+    /// Registra un nuevo activo asignando su emisor y oficial de cumplimiento autorizado.
     pub fn create_asset(
         e: Env,
         asset_id: Symbol,
         issuer: Address,
+        compliance_officer: Address,
         asset_type: Symbol,
         metadata_uri: String,
         main_hash: BytesN<32>,
@@ -85,6 +88,7 @@ impl RwaRegistry {
 
         let asset = AssetData {
             issuer: issuer.clone(),
+            compliance_officer,
             asset_type,
             metadata_uri,
             main_hash,
@@ -102,6 +106,47 @@ impl RwaRegistry {
         Ok(())
     }
 
+    /// Asocia un documento verificable (hash SHA-256 y URI) al activo.
+    pub fn add_document(
+        e: Env,
+        asset_id: Symbol,
+        caller: Address,
+        doc_hash: BytesN<32>,
+        uri: String,
+        version: u32,
+    ) -> Result<(), RegistryError> {
+        caller.require_auth();
+
+        let key = DataKey::Asset(asset_id.clone());
+        let asset: AssetData = e
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RegistryError::AssetNotFound)?;
+
+        if caller != asset.issuer && caller != asset.compliance_officer {
+            return Err(RegistryError::Unauthorized);
+        }
+
+        let doc_key = DataKey::Document(asset_id.clone(), version);
+        let doc = DocumentRecord {
+            doc_hash,
+            uri,
+            version,
+            status: 0, // Current
+        };
+
+        e.storage().persistent().set(&doc_key, &doc);
+
+        e.events().publish(
+            (symbol_short!("doc_add"), asset_id),
+            version,
+        );
+
+        Ok(())
+    }
+
+    /// Modifica el estado global del activo (Draft, Active, Paused, Redeemed).
     pub fn set_asset_status(
         e: Env,
         asset_id: Symbol,
@@ -117,7 +162,7 @@ impl RwaRegistry {
             .get(&key)
             .ok_or(RegistryError::AssetNotFound)?;
 
-        if asset.issuer != caller {
+        if asset.issuer != caller && asset.compliance_officer != caller {
             return Err(RegistryError::Unauthorized);
         }
 
@@ -132,6 +177,7 @@ impl RwaRegistry {
         Ok(())
     }
 
+    /// Autoriza una wallet para operar con el activo. Solo el Compliance Officer designado puede autorizar.
     pub fn authorize_wallet(
         e: Env,
         asset_id: Symbol,
@@ -141,8 +187,15 @@ impl RwaRegistry {
         compliance_officer.require_auth();
 
         let asset_key = DataKey::Asset(asset_id.clone());
-        if !e.storage().persistent().has(&asset_key) {
-            return Err(RegistryError::AssetNotFound);
+        let asset: AssetData = e
+            .storage()
+            .persistent()
+            .get(&asset_key)
+            .ok_or(RegistryError::AssetNotFound)?;
+
+        // Control de Seguridad: Valida que quien firma sea el oficial legítimo registrado
+        if compliance_officer != asset.compliance_officer {
+            return Err(RegistryError::Unauthorized);
         }
 
         let perm_key = DataKey::WalletPerm(asset_id.clone(), wallet.clone());
@@ -158,6 +211,7 @@ impl RwaRegistry {
         Ok(())
     }
 
+    /// Revoca la autorización de una wallet. Solo el Compliance Officer designado puede revocar.
     pub fn revoke_wallet(
         e: Env,
         asset_id: Symbol,
@@ -165,6 +219,17 @@ impl RwaRegistry {
         wallet: Address,
     ) -> Result<(), RegistryError> {
         compliance_officer.require_auth();
+
+        let asset_key = DataKey::Asset(asset_id.clone());
+        let asset: AssetData = e
+            .storage()
+            .persistent()
+            .get(&asset_key)
+            .ok_or(RegistryError::AssetNotFound)?;
+
+        if compliance_officer != asset.compliance_officer {
+            return Err(RegistryError::Unauthorized);
+        }
 
         let perm_key = DataKey::WalletPerm(asset_id.clone(), wallet.clone());
         e.storage()
@@ -179,6 +244,7 @@ impl RwaRegistry {
         Ok(())
     }
 
+    /// Aplica suspensión cautelar (congelamiento) a una wallet.
     pub fn freeze_wallet(
         e: Env,
         asset_id: Symbol,
@@ -186,6 +252,17 @@ impl RwaRegistry {
         wallet: Address,
     ) -> Result<(), RegistryError> {
         compliance_officer.require_auth();
+
+        let asset_key = DataKey::Asset(asset_id.clone());
+        let asset: AssetData = e
+            .storage()
+            .persistent()
+            .get(&asset_key)
+            .ok_or(RegistryError::AssetNotFound)?;
+
+        if compliance_officer != asset.compliance_officer {
+            return Err(RegistryError::Unauthorized);
+        }
 
         let perm_key = DataKey::WalletPerm(asset_id.clone(), wallet.clone());
         e.storage()
@@ -200,6 +277,7 @@ impl RwaRegistry {
         Ok(())
     }
 
+    /// Consulta si una wallet está autorizada para operar (Fail-closed design).
     pub fn is_authorized(e: Env, asset_id: Symbol, wallet: Address) -> bool {
         let perm_key = DataKey::WalletPerm(asset_id, wallet);
         let status: u32 = e
@@ -211,8 +289,18 @@ impl RwaRegistry {
         status == (WalletStatus::Authorized as u32)
     }
 
+    /// Obtiene los datos completos del activo.
     pub fn get_asset(e: Env, asset_id: Symbol) -> Result<AssetData, RegistryError> {
         let key = DataKey::Asset(asset_id);
+        e.storage()
+            .persistent()
+            .get(&key)
+            .ok_or(RegistryError::AssetNotFound)
+    }
+
+    /// Consulta un documento específico por versión.
+    pub fn get_document(e: Env, asset_id: Symbol, version: u32) -> Result<DocumentRecord, RegistryError> {
+        let key = DataKey::Document(asset_id, version);
         e.storage()
             .persistent()
             .get(&key)

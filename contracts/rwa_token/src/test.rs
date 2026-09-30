@@ -27,9 +27,8 @@ fn test_permissioned_transfer_flow() {
     let main_hash = BytesN::from_array(&env, &[7u8; 32]);
     let due_date = 1800000000u64;
 
-    // Registrar activo
-    registry_client.create_asset(&asset_id, &issuer, &asset_type, &metadata_uri, &main_hash, &due_date);
-    registry_client.set_asset_status(&asset_id, &issuer, &(AssetStatus::Active as u32));
+    // Registrar activo (inicia en Draft) con su oficial de cumplimiento asignado
+    registry_client.create_asset(&asset_id, &issuer, &compliance, &asset_type, &metadata_uri, &main_hash, &due_date);
 
     // Autorizar al Emisor y a Wallet A en el registro
     registry_client.authorize_wallet(&asset_id, &compliance, &issuer);
@@ -49,17 +48,28 @@ fn test_permissioned_transfer_flow() {
         &String::from_str(&env, "FACT001"),
     );
 
-    // 3. Mint de 1,000 tokens al emisor
+    // 3. Control de Seguridad: No se puede emitir mientras el activo esté en Draft
+    let draft_mint = token_client.try_mint(&admin, &issuer, &1000i128);
+    assert_eq!(draft_mint, Err(Ok(TokenError::AssetNotActive)));
+
+    // Activar activo en RwaRegistry
+    registry_client.set_asset_status(&asset_id, &issuer, &(AssetStatus::Active as u32));
+
+    // 4. Control de Seguridad: Rechazar montos <= 0
+    let zero_mint = token_client.try_mint(&admin, &issuer, &0i128);
+    assert_eq!(zero_mint, Err(Ok(TokenError::InvalidAmount)));
+
+    // 5. Mint exitoso de 1,000 tokens al emisor (Activo Active + Receptor autorizado)
     token_client.mint(&admin, &issuer, &1000i128);
     assert_eq!(token_client.balance(&issuer), 1000i128);
     assert_eq!(token_client.total_supply(), 1000i128);
 
-    // 4. Transferencia válida hacia Wallet A (Autorizada)
+    // 6. Transferencia válida hacia Wallet A (Autorizada)
     token_client.transfer(&issuer, &wallet_a, &200i128);
     assert_eq!(token_client.balance(&issuer), 800i128);
     assert_eq!(token_client.balance(&wallet_a), 200i128);
 
-    // 5. Transferencia inválida hacia Wallet B (NO autorizada) -> Debe fallar con ReceiverNotAuthorized
+    // 7. Transferencia inválida hacia Wallet B (NO autorizada) -> Debe fallar con ReceiverNotAuthorized
     let result = token_client.try_transfer(&issuer, &wallet_b, &100i128);
     assert_eq!(result, Err(Ok(TokenError::ReceiverNotAuthorized)));
 
@@ -67,7 +77,11 @@ fn test_permissioned_transfer_flow() {
     assert_eq!(token_client.balance(&issuer), 800i128);
     assert_eq!(token_client.balance(&wallet_b), 0i128);
 
-    // 6. Prueba de Pausa de Emergencia
+    // 8. Control de Seguridad: Rechazar transferencias con monto negativo o cero
+    let invalid_transfer = token_client.try_transfer(&issuer, &wallet_a, &-10i128);
+    assert_eq!(invalid_transfer, Err(Ok(TokenError::InvalidAmount)));
+
+    // 9. Prueba de Pausa de Emergencia
     token_client.pause(&admin);
     let pause_result = token_client.try_transfer(&issuer, &wallet_a, &50i128);
     assert_eq!(pause_result, Err(Ok(TokenError::AssetPaused)));
@@ -76,7 +90,7 @@ fn test_permissioned_transfer_flow() {
     token_client.transfer(&issuer, &wallet_a, &50i128);
     assert_eq!(token_client.balance(&wallet_a), 250i128);
 
-    // 7. Prueba de Redención / Burn
+    // 10. Prueba de Redención / Burn
     token_client.burn(&issuer, &750i128);
     assert_eq!(token_client.balance(&issuer), 0i128);
     assert_eq!(token_client.total_supply(), 250i128);
