@@ -5,6 +5,7 @@ import {
   Plus, RefreshCw, ShieldCheck, Sparkles, UserCheck, UserPlus, Users, X
 } from "lucide-react";
 import { OrbitalLines } from "./components/OrbitalLines";
+import assetraLogo from "./assetra-logo.png";
 import { assetraClient } from "./lib/client";
 import type {
   Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus
@@ -35,9 +36,7 @@ const date = (value: string) => new Intl.DateTimeFormat("es-BO", { day: "2-digit
 
 function Mark() {
   return (
-    <div className="brand-mark" aria-label="Assetra">
-      <span>A</span><span>S</span>
-    </div>
+    <img className="brand-logo" src={assetraLogo} alt="Assetra" />
   );
 }
 

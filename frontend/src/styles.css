@@ -34,9 +34,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-bottom: var(--border); background: rgba(244, 243, 239, .94); backdrop-filter: blur(12px);
 }
 .brand { display: flex; gap: 12px; align-items: center; padding: 0 25px; border: 0; border-right: var(--border); background: transparent; text-align: left; }
-.brand-mark { width: 43px; height: 43px; display: grid; grid-template-columns: 1fr 1fr; flex: 0 0 auto; border: var(--border); background: var(--blue); color: #fff; box-shadow: 3px 3px 0 var(--ink); font-weight: 900; font-size: 14px; }
-.brand-mark span { display: grid; place-items: center; }
-.brand-mark span + span { border-left: 1px solid rgba(255,255,255,.65); }
+.brand-logo { width: 62px; height: 62px; display: block; flex: 0 0 auto; object-fit: contain; }
 .brand-words { font-size: 9px; line-height: 1.05; font-weight: 900; letter-spacing: .12em; }
 .main-nav { display: flex; align-items: stretch; padding-left: 20px; }
 .main-nav button { position: relative; border: 0; padding: 0 18px; background: transparent; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
