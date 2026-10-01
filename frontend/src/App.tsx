@@ -1,14 +1,20 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Activity, ArrowRight, BadgeCheck, Ban, Blocks, ChevronRight, CircleDollarSign,
-  FileCheck2, FilePlus2, Fingerprint, Menu, Pause, Play,
-  Plus, RefreshCw, ShieldCheck, Sparkles, UserCheck, UserPlus, Users, X
+  ExternalLink, FileCheck2, FilePlus2, FileUp, Fingerprint, Lock, Menu, Pause, Play,
+  Plus, RefreshCw, Send, Server, ShieldAlert, ShieldCheck, Snowflake, Sparkles, UserCheck, UserPlus, Users, Wallet, X
 } from "lucide-react";
+import {
+  getAddress as getFreighterAddress,
+  isConnected as isFreighterConnected,
+  requestAccess as requestFreighterAccess
+} from "@stellar/freighter-api";
 import { OrbitalLines } from "./components/OrbitalLines";
-import { assetraClient } from "./lib/client";
+import { apiUrl, assetraClient, checkBackendHealth, getClientMode, setClientMode, type ClientMode } from "./lib/client";
 import type {
-  Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus
+  Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus, TransferResult
 } from "./types";
+
 
 type View = "dashboard" | "assets" | "participants" | "documents" | "create";
 
@@ -16,11 +22,12 @@ const statusLabels: Record<AssetStatus, string> = {
   draft: "Borrador", active: "Activo", paused: "Pausado", redeemed: "Redimido"
 };
 const participantLabels: Record<ParticipantStatus, string> = {
-  pending: "Pendiente", authorized: "Autorizado", suspended: "Suspendido"
+  pending: "Pendiente", authorized: "Autorizado", revoked: "Revocado", frozen: "Congelado"
 };
 const typeLabels: Record<AssetType, string> = {
   invoice: "Factura", bond: "Bono", "real-estate": "Inmueble", commodity: "Commodity", "carbon-credit": "Crédito de carbono"
 };
+
 
 const money = (value: number, currency = "USD") => {
   const code = currency.toUpperCase();
@@ -89,21 +96,108 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wallet, setWallet] = useState<string | null>(null);
+  const [walletConnecting, setWalletConnecting] = useState(false);
+  const [clientMode, setClientModeState] = useState<ClientMode>(getClientMode());
 
   const selected = useMemo(() => assets.find((asset) => asset.id === selectedId) ?? assets[0], [assets, selectedId]);
 
   useEffect(() => {
+    checkBackendHealth().then((res) => {
+      if (res.ok && clientMode === "http") {
+        setToast("Conectado a Live API en http://localhost:4000");
+      }
+    });
     assetraClient.listAssets()
       .then((data) => { setAssets(data); if (data[0] && !data.some((item) => item.id === selectedId)) setSelectedId(data[0].id); })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [clientMode]);
 
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 3200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  const toggleClientMode = async () => {
+    if (clientMode === "mock") {
+      setLoading(true);
+      setError(null);
+      const health = await checkBackendHealth();
+      if (!health.ok) {
+        setLoading(false);
+        setError(`No se detectó el backend en ${apiUrl}. Inícialo con "npm run dev -w backend" o ejecuta "npm run dev" en la raíz.`);
+        return;
+      }
+      setClientMode("http");
+      setClientModeState("http");
+      try {
+        const data = await assetraClient.listAssets();
+        setAssets(data);
+        if (data[0]) setSelectedId(data[0].id);
+        setToast("Conectado a Live API (Backend Express en puerto 4000)");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Error al conectar con API");
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      setClientMode("mock");
+      setClientModeState("mock");
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await assetraClient.listAssets();
+        setAssets(data);
+        if (data[0]) setSelectedId(data[0].id);
+        setToast("Modo MOCK (Simulación local) activado");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Error al activar modo mock");
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+
+  const connectFreighter = async () => {
+    setWalletConnecting(true);
+    try {
+      const isAvailable = await isFreighterConnected();
+      const hasFreighter = typeof isAvailable === "object" ? !!isAvailable?.isConnected : !!isAvailable;
+      if (hasFreighter) {
+        const accessObj = await requestFreighterAccess();
+        const addr = typeof accessObj === "object" ? accessObj?.address : accessObj;
+        if (addr) {
+          setWallet(addr);
+          setToast("Wallet Freighter conectada correctamente");
+          return;
+        }
+        const directAddr = await getFreighterAddress();
+        const direct = typeof directAddr === "object" ? directAddr?.address : directAddr;
+        if (direct) {
+          setWallet(direct);
+          setToast("Wallet Freighter conectada correctamente");
+          return;
+        }
+      }
+      const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
+      setWallet(demoWallet);
+      setToast("Freighter no detectado: conectada wallet demo Testnet (GB72...BOI4)");
+    } catch {
+      const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
+      setWallet(demoWallet);
+      setToast("Modo Testnet: conectada wallet demo (GB72...BOI4)");
+    } finally {
+      setWalletConnecting(false);
+    }
+  };
+
+  const disconnectWallet = () => {
+    setWallet(null);
+    setToast("Wallet desconectada");
+  };
 
   const navigate = (next: View) => {
     setView(next); setMenuOpen(false); setError(null); window.scrollTo({ top: 0, behavior: "smooth" });
@@ -150,6 +244,31 @@ export default function App() {
         </nav>
         <div className="topbar-actions">
           <span className="network-pill"><i /> STELLAR TESTNET</span>
+          <button
+            type="button"
+            className={`mode-toggle-btn mode-${clientMode}`}
+            onClick={toggleClientMode}
+            title={clientMode === "http" ? `API activa en ${apiUrl}. Clic para alternar a MOCK` : "Clic para conectar con Backend Live API"}
+          >
+            <Server size={13} />
+            {clientMode === "http" && <span className="dot-live" />}
+            <span>{clientMode === "http" ? "API LIVE (4000)" : "MODO: MOCK"}</span>
+          </button>
+          {wallet ? (
+
+            <div className="wallet-pill" title={wallet}>
+              <i />
+              <span>{wallet.slice(0, 4)}...{wallet.slice(-4)}</span>
+              <button className="disconnect-btn" onClick={disconnectWallet} title="Desconectar wallet">
+                <X size={14} />
+              </button>
+            </div>
+          ) : (
+            <button className="wallet-btn" onClick={connectFreighter} disabled={walletConnecting}>
+              <Wallet size={15} />
+              {walletConnecting ? "Conectando…" : "Conectar Freighter"}
+            </button>
+          )}
           <button className="primary compact" onClick={() => navigate("create")}><Plus size={18} /> Crear activo</button>
           <button className="menu-button" onClick={() => setMenuOpen((value) => !value)} aria-label="Abrir menú">{menuOpen ? <X /> : <Menu />}</button>
         </div>
@@ -201,9 +320,19 @@ export default function App() {
             <section className="page-section">
               <PageHeading eyebrow="CONTROL DE CICLO DE VIDA" title="Activos" copy="Selecciona un activo para consultar su respaldo, suministro, participantes y controles administrativos." action={<button className="primary" onClick={() => navigate("create")}><Plus size={18} /> Nuevo activo</button>} />
               <div className="asset-grid compact-grid">{assets.map((asset) => <AssetCard key={asset.id} asset={asset} onOpen={() => setSelectedId(asset.id)} />)}</div>
-              {selected && <AssetDetail asset={selected} busy={busy} onAction={runAction} />}
+              {selected && (
+                <AssetDetail
+                  asset={selected}
+                  busy={busy}
+                  connectedWallet={wallet}
+                  onAction={runAction}
+                  onTransferSuccess={refreshSelected}
+                  onNavigateToParticipants={() => navigate("participants")}
+                />
+              )}
             </section>
           )}
+
 
           {view === "participants" && selected && (
             <ParticipantsView assets={assets} selected={selected} onSelect={setSelectedId} onChanged={refreshSelected} onToast={setToast} />
@@ -239,8 +368,55 @@ function AssetPicker({ assets, selected, onSelect }: { assets: Asset[]; selected
   );
 }
 
-function AssetDetail({ asset, busy, onAction }: { asset: Asset; busy: boolean; onAction: (action: LifecycleAction, amount?: number) => void }) {
+function AssetDetail({
+  asset,
+  busy,
+  connectedWallet,
+  onAction,
+  onTransferSuccess,
+  onNavigateToParticipants
+}: {
+  asset: Asset;
+  busy: boolean;
+  connectedWallet: string | null;
+  onAction: (action: LifecycleAction, amount?: number) => void;
+  onTransferSuccess: () => Promise<void>;
+  onNavigateToParticipants: () => void;
+}) {
   const [amount, setAmount] = useState(100);
+  const [transferFrom, setTransferFrom] = useState(connectedWallet || asset.issuer);
+  const [transferTo, setTransferTo] = useState("");
+  const [transferAmount, setTransferAmount] = useState(50);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [transferResult, setTransferResult] = useState<TransferResult | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (connectedWallet) {
+      setTransferFrom(connectedWallet);
+    }
+  }, [connectedWallet]);
+
+  const handleTransfer = async (e: FormEvent) => {
+    e.preventDefault();
+    setTransferBusy(true);
+    setTransferResult(null);
+    setTransferError(null);
+    try {
+      const res = await assetraClient.transferTokens(asset.id, {
+        from: transferFrom.trim(),
+        to: transferTo.trim(),
+        amount: Number(transferAmount)
+      });
+      setTransferResult(res);
+      await onTransferSuccess();
+    } catch (err) {
+      setTransferError(err instanceof Error ? err.message : "Error al procesar la transferencia");
+    } finally {
+      setTransferBusy(false);
+    }
+  };
+
   const percent = Math.round((asset.mintedSupply / asset.supply) * 100);
   return (
     <article className="detail-panel">
@@ -277,6 +453,154 @@ function AssetDetail({ asset, busy, onAction }: { asset: Asset; busy: boolean; o
           </div>
         </div>
       </div>
+
+      {/* Permissioned Token Transfer Panel */}
+      <div className="transfer-block">
+        <h3><Send size={19} /> Transferencia de Tokens RWA (Permissioned Transfer)</h3>
+        <p className="transfer-subtitle">
+          Los tokens RWA emitidos en Stellar Testnet están gobernados por el contrato inteligente <code>PermissionedRwaToken</code>. Solo participantes autorizados por Compliance pueden recibir fondos.
+        </p>
+
+        <form onSubmit={handleTransfer}>
+          <div className="transfer-grid">
+            <label>
+              <span>CUENTA ORIGEN</span>
+              <input
+                required
+                className="mono"
+                value={transferFrom}
+                onChange={(e) => setTransferFrom(e.target.value)}
+                placeholder="Dirección Stellar G... o Emisor"
+              />
+            </label>
+
+            <label>
+              <span>DIRECCIÓN DESTINO (RECEIVER)</span>
+              <input
+                required
+                className="mono"
+                value={transferTo}
+                onChange={(e) => setTransferTo(e.target.value)}
+                placeholder="Pega wallet G... o selecciona abajo"
+              />
+              <div className="transfer-quick-select">
+                {asset.participants.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`transfer-pill-btn pill-${p.status}`}
+                    onClick={() => setTransferTo(p.wallet)}
+                    title={`${p.name} (${participantLabels[p.status]})`}
+                  >
+                    {p.status === "frozen" && <Snowflake size={11} />}
+                    {p.status === "revoked" && <Ban size={11} />}
+                    {p.status === "pending" && <Lock size={11} />}
+                    {p.status === "authorized" && <BadgeCheck size={11} />}
+                    <span>{p.name.split(" ")[0]} ({participantLabels[p.status]})</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="transfer-pill-btn pill-revoked"
+                  onClick={() => setTransferTo("GDESCONOCIDA999NOAUTORIZADAXASSETRA")}
+                  title="Probar wallet no autorizada"
+                >
+                  <ShieldAlert size={11} /> Wallet No Registrada
+                </button>
+              </div>
+            </label>
+
+            <label>
+              <span>CANTIDAD ({asset.symbol})</span>
+              <input
+                required
+                type="number"
+                min="1"
+                max={asset.mintedSupply || 100000}
+                value={transferAmount}
+                onChange={(e) => setTransferAmount(Number(e.target.value))}
+              />
+            </label>
+
+            <button
+              type="submit"
+              className="primary"
+              disabled={transferBusy || asset.status !== "active" || asset.mintedSupply <= 0}
+            >
+              <Send size={16} />
+              {transferBusy ? "Validando…" : "Transferir"}
+            </button>
+          </div>
+        </form>
+
+        {/* Success Feedback Banner */}
+        {transferResult && (
+          <div className="transfer-alert-success">
+            <h4><BadgeCheck size={18} /> Transferencia Autorizada y Confirmada</h4>
+            <p>
+              Se enviaron <b>{transferResult.amount} {asset.symbol}</b> a la cuenta <span className="mono">{transferResult.to}</span>. La verificación de Compliance on-chain concluyó con éxito.
+            </p>
+            <div className="transfer-alert-actions">
+              <a
+                href={`https://stellar.expert/explorer/testnet/tx/${transferResult.txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="explorer-link"
+              >
+                <ExternalLink size={13} />
+                Ver en Stellar Expert ({transferResult.txHash.slice(0, 12)}...)
+              </a>
+              <button
+                type="button"
+                className="btn-compliance-action"
+                onClick={() => setTransferResult(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rejection Feedback Banner */}
+        {transferError && (
+          <div className="transfer-alert-error">
+            <div className="rejection-header">
+              <span className="rejection-badge">
+                <ShieldAlert size={14} /> Rechazo de Regla On-Chain
+              </span>
+              <span className="mono" style={{ fontSize: "11px", color: "var(--red)", fontWeight: "bold" }}>
+                {transferError.includes("ReceiverNotAuthorized")
+                  ? "ERROR: ReceiverNotAuthorized"
+                  : transferError.includes("WalletFrozen")
+                  ? "ERROR: WalletFrozen"
+                  : transferError.includes("AssetNotActive")
+                  ? "ERROR: AssetNotActive"
+                  : "ERROR: ComplianceRuleViolation"}
+              </span>
+            </div>
+            <h4>Transacción Bloqueada por Smart Contract de Assetra</h4>
+            <p>{transferError}</p>
+            <div className="transfer-alert-actions">
+              <button
+                type="button"
+                className="btn-compliance-action"
+                onClick={onNavigateToParticipants}
+              >
+                <UserCheck size={14} />
+                Gestionar Whitelist en Participantes
+              </button>
+              <button
+                type="button"
+                className="btn-compliance-action"
+                onClick={() => setTransferError(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="activity-list">
         <h3>Actividad reciente</h3>
         {asset.activity.length ? asset.activity.map((event) => (
@@ -286,6 +610,7 @@ function AssetDetail({ asset, busy, onAction }: { asset: Asset; busy: boolean; o
     </article>
   );
 }
+
 
 function ParticipantsView({ assets, selected, onSelect, onChanged, onToast }: {
   assets: Asset[]; selected: Asset; onSelect: (id: string) => void; onChanged: () => Promise<void>; onToast: (message: string) => void;
@@ -317,8 +642,27 @@ function ParticipantsView({ assets, selected, onSelect, onChanged, onToast }: {
                 <span>{participant.jurisdiction}</span>
                 <span className={`participant-status participant-${participant.status}`}>{participantLabels[participant.status]}</span>
                 <div className="row-actions">
-                  {participant.status !== "authorized" && <button disabled={busy} onClick={() => changeStatus(participant.id, "authorized")}>Autorizar</button>}
-                  {participant.status === "authorized" && <button disabled={busy} onClick={() => changeStatus(participant.id, "suspended")}>Suspender</button>}
+                  {participant.status === "pending" && (
+                    <>
+                      <button className="btn-auth" disabled={busy} onClick={() => changeStatus(participant.id, "authorized")}>Autorizar</button>
+                      <button className="btn-revoke" disabled={busy} onClick={() => changeStatus(participant.id, "revoked")}>Rechazar</button>
+                    </>
+                  )}
+                  {participant.status === "authorized" && (
+                    <>
+                      <button className="btn-freeze" disabled={busy} onClick={() => changeStatus(participant.id, "frozen")}>Congelar</button>
+                      <button className="btn-revoke" disabled={busy} onClick={() => changeStatus(participant.id, "revoked")}>Revocar</button>
+                    </>
+                  )}
+                  {participant.status === "frozen" && (
+                    <>
+                      <button className="btn-auth" disabled={busy} onClick={() => changeStatus(participant.id, "authorized")}>Descongelar</button>
+                      <button className="btn-revoke" disabled={busy} onClick={() => changeStatus(participant.id, "revoked")}>Revocar</button>
+                    </>
+                  )}
+                  {participant.status === "revoked" && (
+                    <button className="btn-auth" disabled={busy} onClick={() => changeStatus(participant.id, "authorized")}>Re-autorizar</button>
+                  )}
                 </div>
               </div>
             ))}
@@ -341,11 +685,46 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
 }) {
   const [form, setForm] = useState({ name: "", kind: "Factura", hash: "", url: "" });
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [calculatingHash, setCalculatingHash] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const processFile = async (file: File) => {
+    setCalculatingHash(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const digest = await window.crypto.subtle.digest("SHA-256", buffer);
+      const hashHex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+      setFileName(file.name);
+      setForm((current) => ({
+        ...current,
+        name: current.name || file.name.replace(/\.[^/.]+$/, ""),
+        hash: hashHex
+      }));
+      onToast("Hash SHA-256 calculado localmente desde el archivo");
+    } catch {
+      onToast("Error al procesar el archivo");
+    } finally {
+      setCalculatingHash(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      processFile(e.dataTransfer.files[0]);
+    }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true);
     try {
       await assetraClient.addDocument(selected.id, { ...form, version: 1 });
-      await onChanged(); setForm({ name: "", kind: "Factura", hash: "", url: "" }); onToast("Hash del documento registrado");
+      await onChanged(); setForm({ name: "", kind: "Factura", hash: "", url: "" }); setFileName(null); onToast("Hash del documento registrado");
     } finally { setBusy(false); }
   };
   return (
@@ -362,7 +741,36 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
           </div> : <EmptyState title="Sin documentos" copy="Registra el documento que respalda este activo." />}
         </div>
         <form className="side-form" onSubmit={submit}>
-          <div className="form-icon"><FilePlus2 /></div><h2>Registrar documento</h2><p>Ingresa un hash generado fuera de Assetra. Este MVP no carga información sensible.</p>
+          <div className="form-icon"><FilePlus2 /></div><h2>Registrar documento</h2><p>Calcula el hash SHA-256 desde un PDF local o ingresa la huella manualmente.</p>
+
+          {/* Client-side PDF SHA-256 Drag & Drop */}
+          <div
+            className={`dropzone ${isDragging ? "active" : ""}`}
+            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={(e) => {
+                if (e.target.files && e.target.files[0]) {
+                  processFile(e.target.files[0]);
+                }
+              }}
+            />
+            <FileUp size={24} />
+            <b>{calculatingHash ? "Calculando SHA-256…" : fileName ? `PDF: ${fileName}` : "Seleccionar o arrastrar PDF aquí"}</b>
+            <p>El archivo nunca sale de tu navegador. Calculamos la huella SHA-256 con Web Crypto API.</p>
+            {form.hash && (
+              <div className="hash-calculated">
+                <BadgeCheck size={14} /> SHA-256: {form.hash.slice(0, 20)}...
+              </div>
+            )}
+          </div>
+
           <label><span>NOMBRE</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Factura comercial 091" /></label>
           <label><span>TIPO</span><select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value })}><option>Factura</option><option>Custodia</option><option>Auditoría</option><option>Contrato legal</option></select></label>
           <label><span>HASH SHA-256</span><input required minLength={8} className="mono" value={form.hash} onChange={(event) => setForm({ ...form, hash: event.target.value })} placeholder="a47f8c0d..." /></label>
@@ -373,6 +781,7 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
     </section>
   );
 }
+
 
 function CreateAssetView({ onCancel, onCreated }: { onCancel: () => void; onCreated: (asset: Asset) => void }) {
   const [busy, setBusy] = useState(false);

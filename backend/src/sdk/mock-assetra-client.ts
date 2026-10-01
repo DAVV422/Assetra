@@ -1,7 +1,16 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { demoAssets } from "../fixtures.js";
 import type { AssetraClient } from "./assetra-client.js";
-import type { Asset, CreateAssetInput, DocumentRecord, LifecycleActionInput, Participant, ParticipantStatus } from "../types.js";
+import type {
+  Asset,
+  CreateAssetInput,
+  DocumentRecord,
+  LifecycleActionInput,
+  Participant,
+  ParticipantStatus,
+  TransferInput,
+  TransferResult
+} from "../types.js";
 
 const clone = <T>(value: T): T => structuredClone(value);
 
@@ -57,6 +66,65 @@ export class MockAssetraClient implements AssetraClient {
     });
     return clone(asset);
   }
+
+  async transferTokens(assetId: string, input: TransferInput): Promise<TransferResult> {
+    const asset = this.assets.find((item) => item.id === assetId);
+    if (!asset) throw new Error("ASSET_NOT_FOUND");
+
+    if (asset.status !== "active") {
+      throw new Error(`AssetNotActive: No se pueden transferir tokens porque el activo está en estado '${asset.status}'`);
+    }
+
+    if (!input.amount || input.amount <= 0) {
+      throw new Error("InvalidAmount: El monto a transferir debe ser mayor a 0");
+    }
+
+    if (input.amount > asset.mintedSupply) {
+      throw new Error("InsufficientBalance: El saldo disponible es insuficiente para esta transferencia");
+    }
+
+    const targetParticipant = asset.participants.find(
+      (p) => p.wallet.toLowerCase() === input.to.toLowerCase() || p.id === input.to
+    );
+
+    if (!targetParticipant || targetParticipant.status !== "authorized") {
+      const statusNote = targetParticipant ? `(estado actual: '${targetParticipant.status.toUpperCase()}')` : "(no registrada en Whitelist)";
+      throw new Error(`ReceiverNotAuthorized: La transacción fue bloqueada por el contrato de reglas de Assetra porque la dirección de destino '${input.to}' no está autorizada por Compliance ${statusNote}.`);
+    }
+
+    const senderParticipant = asset.participants.find(
+      (p) => p.wallet.toLowerCase() === input.from.toLowerCase() || p.id === input.from
+    );
+
+    if (senderParticipant && senderParticipant.status === "frozen") {
+      throw new Error("WalletFrozen: La cuenta emisora se encuentra congelada preventivamente por Compliance.");
+    }
+    if (senderParticipant && senderParticipant.status === "revoked") {
+      throw new Error("SenderNotAuthorized: La cuenta emisora fue revocada por Compliance.");
+    }
+
+    const txHash = randomBytes(32).toString("hex");
+    const timestamp = new Date().toISOString();
+
+    asset.activity.unshift({
+      id: randomUUID(),
+      type: "transfer",
+      label: `Transferencia de ${input.amount} ${asset.symbol} a ${targetParticipant.name}`,
+      actor: input.from.length > 10 ? input.from.slice(0, 4) + "..." + input.from.slice(-4) : input.from,
+      timestamp,
+      txHash: txHash.slice(0, 16) + "..."
+    });
+
+    return {
+      txHash,
+      status: "success",
+      from: input.from,
+      to: targetParticipant.wallet,
+      amount: input.amount,
+      timestamp
+    };
+  }
+
 
   async addParticipant(assetId: string, input: Omit<Participant, "id">): Promise<Participant> {
     const asset = this.assets.find((item) => item.id === assetId);
