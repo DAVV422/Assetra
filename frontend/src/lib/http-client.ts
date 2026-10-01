@@ -1,4 +1,13 @@
-import type { Asset, CreateAssetInput, DocumentRecord, LifecycleActionInput, Participant, ParticipantStatus } from "../types";
+import type {
+  Asset,
+  CreateAssetInput,
+  DocumentRecord,
+  LifecycleActionInput,
+  Participant,
+  ParticipantStatus,
+  TransferInput,
+  TransferResult
+} from "../types";
 import type { AssetraClient } from "./assetra-client";
 
 export class HttpAssetraClient implements AssetraClient {
@@ -16,7 +25,9 @@ export class HttpAssetraClient implements AssetraClient {
   getAsset(assetId: string) { return this.request<Asset>(`/api/assets/${assetId}`); }
   createAsset(input: CreateAssetInput) { return this.request<Asset>("/api/assets", { method: "POST", body: JSON.stringify(input) }); }
   runLifecycleAction(assetId: string, input: LifecycleActionInput) { return this.request<Asset>(`/api/assets/${assetId}/actions`, { method: "POST", body: JSON.stringify(input) }); }
+  transferTokens(assetId: string, input: TransferInput) { return this.request<TransferResult>(`/api/assets/${assetId}/transfers`, { method: "POST", body: JSON.stringify(input) }); }
   addParticipant(assetId: string, participant: Omit<Participant, "id">) { return this.request<Participant>(`/api/assets/${assetId}/participants`, { method: "POST", body: JSON.stringify(participant) }); }
   updateParticipantStatus(assetId: string, participantId: string, status: ParticipantStatus) { return this.request<Participant>(`/api/assets/${assetId}/participants/${participantId}`, { method: "PATCH", body: JSON.stringify({ status }) }); }
   addDocument(assetId: string, document: Omit<DocumentRecord, "id" | "createdAt">) { return this.request<DocumentRecord>(`/api/assets/${assetId}/documents`, { method: "POST", body: JSON.stringify(document) }); }
 }
+
