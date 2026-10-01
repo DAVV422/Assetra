@@ -63,7 +63,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: var(--muted); cursor: pointer; border-radius: 2px;
 }
 .wallet-pill button.disconnect-btn:hover { color: var(--red); background: rgba(237, 75, 63, 0.1); }
+.mode-toggle-btn {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 38px; border: 1.5px solid var(--ink);
+  padding: 0 10px; background: var(--white); box-shadow: 2px 2px 0 var(--ink);
+  font-family: "DM Mono", monospace; font-size: 10px; font-weight: 700; cursor: pointer;
+  transition: transform .12s ease, background .12s ease;
+}
+.mode-toggle-btn:hover { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
+.mode-toggle-btn.mode-mock { background: #fdf6e2; color: #785200; }
+.mode-toggle-btn.mode-http { background: #e0f2fe; color: #0369a1; }
+.dot-live { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px rgba(40, 199, 111, .25); display: inline-block; }
 .menu-button { display: none; border: 0; background: transparent; }
+
 
 
 .primary, .secondary, .text-button {

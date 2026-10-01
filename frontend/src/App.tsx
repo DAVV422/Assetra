@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Activity, ArrowRight, BadgeCheck, Ban, Blocks, ChevronRight, CircleDollarSign,
   ExternalLink, FileCheck2, FilePlus2, FileUp, Fingerprint, Lock, Menu, Pause, Play,
-  Plus, RefreshCw, Send, ShieldAlert, ShieldCheck, Snowflake, Sparkles, UserCheck, UserPlus, Users, Wallet, X
+  Plus, RefreshCw, Send, Server, ShieldAlert, ShieldCheck, Snowflake, Sparkles, UserCheck, UserPlus, Users, Wallet, X
 } from "lucide-react";
 import {
   getAddress as getFreighterAddress,
@@ -10,10 +10,11 @@ import {
   requestAccess as requestFreighterAccess
 } from "@stellar/freighter-api";
 import { OrbitalLines } from "./components/OrbitalLines";
-import { assetraClient } from "./lib/client";
+import { apiUrl, assetraClient, checkBackendHealth, getClientMode, setClientMode, type ClientMode } from "./lib/client";
 import type {
   Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus, TransferResult
 } from "./types";
+
 
 type View = "dashboard" | "assets" | "participants" | "documents" | "create";
 
@@ -97,21 +98,68 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [wallet, setWallet] = useState<string | null>(null);
   const [walletConnecting, setWalletConnecting] = useState(false);
+  const [clientMode, setClientModeState] = useState<ClientMode>(getClientMode());
 
   const selected = useMemo(() => assets.find((asset) => asset.id === selectedId) ?? assets[0], [assets, selectedId]);
 
   useEffect(() => {
+    checkBackendHealth().then((res) => {
+      if (res.ok && clientMode === "http") {
+        setToast("Conectado a Live API en http://localhost:4000");
+      }
+    });
     assetraClient.listAssets()
       .then((data) => { setAssets(data); if (data[0] && !data.some((item) => item.id === selectedId)) setSelectedId(data[0].id); })
       .catch((reason: Error) => setError(reason.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [clientMode]);
 
   useEffect(() => {
     if (!toast) return;
     const timeout = window.setTimeout(() => setToast(null), 3200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  const toggleClientMode = async () => {
+    if (clientMode === "mock") {
+      setLoading(true);
+      setError(null);
+      const health = await checkBackendHealth();
+      if (!health.ok) {
+        setLoading(false);
+        setError(`No se detectó el backend en ${apiUrl}. Inícialo con "npm run dev -w backend" o ejecuta "npm run dev" en la raíz.`);
+        return;
+      }
+      setClientMode("http");
+      setClientModeState("http");
+      try {
+        const data = await assetraClient.listAssets();
+        setAssets(data);
+        if (data[0]) setSelectedId(data[0].id);
+        setToast("Conectado a Live API (Backend Express en puerto 4000)");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Error al conectar con API");
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      setClientMode("mock");
+      setClientModeState("mock");
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await assetraClient.listAssets();
+        setAssets(data);
+        if (data[0]) setSelectedId(data[0].id);
+        setToast("Modo MOCK (Simulación local) activado");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Error al activar modo mock");
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
 
   const connectFreighter = async () => {
     setWalletConnecting(true);
@@ -196,7 +244,18 @@ export default function App() {
         </nav>
         <div className="topbar-actions">
           <span className="network-pill"><i /> STELLAR TESTNET</span>
+          <button
+            type="button"
+            className={`mode-toggle-btn mode-${clientMode}`}
+            onClick={toggleClientMode}
+            title={clientMode === "http" ? `API activa en ${apiUrl}. Clic para alternar a MOCK` : "Clic para conectar con Backend Live API"}
+          >
+            <Server size={13} />
+            {clientMode === "http" && <span className="dot-live" />}
+            <span>{clientMode === "http" ? "API LIVE (4000)" : "MODO: MOCK"}</span>
+          </button>
           {wallet ? (
+
             <div className="wallet-pill" title={wallet}>
               <i />
               <span>{wallet.slice(0, 4)}...{wallet.slice(-4)}</span>

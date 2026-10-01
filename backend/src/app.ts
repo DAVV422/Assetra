@@ -18,8 +18,9 @@ const documentSchema = z.object({ name: z.string().min(2), kind: z.string().min(
 
 export function createApp(client: AssetraClient) {
   const app = express();
-  app.use(cors({ origin: process.env.CORS_ORIGIN ?? "http://localhost:5173" }));
+  app.use(cors({ origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : true, credentials: true }));
   app.use(express.json());
+
 
   app.get("/health", (_request, response) => response.json({ status: "ok", service: "assetra-api", mode: process.env.ASSETRA_MODE ?? "mock" }));
   app.get("/api/assets", async (_request, response, next) => { try { response.json(await client.listAssets()); } catch (error) { next(error); } });

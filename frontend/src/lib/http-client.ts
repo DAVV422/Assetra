@@ -18,9 +18,10 @@ export class HttpAssetraClient implements AssetraClient {
       headers: { "Content-Type": "application/json", ...init?.headers }
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error ?? "No fue posible completar la operación");
+    if (!response.ok) throw new Error(body.message ?? body.error ?? "No fue posible completar la operación");
     return body;
   }
+
   listAssets() { return this.request<Asset[]>("/api/assets"); }
   getAsset(assetId: string) { return this.request<Asset>(`/api/assets/${assetId}`); }
   createAsset(input: CreateAssetInput) { return this.request<Asset>("/api/assets", { method: "POST", body: JSON.stringify(input) }); }
