@@ -39,4 +39,70 @@ describe("Assetra API", () => {
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("INVALID_MINT_AMOUNT");
   });
+
+  it("executes transfer to an authorized participant", async () => {
+    const response = await request(app)
+      .post("/api/assets/asset-invoice-091/transfers")
+      .send({
+        from: "Andina Export SRL",
+        to: "GCRVRGTER4FV3VPIO6C4TIG63OZNXMOCQCZR5LUBFB4OUB53FBOKBGLO", // Aya Capital (authorized)
+        amount: 50
+      });
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe("success");
+    expect(response.body.txHash).toBeDefined();
+    expect(response.body.amount).toBe(50);
+  });
+
+  it("blocks transfer to an unauthorized participant with ReceiverNotAuthorized", async () => {
+    const response = await request(app)
+      .post("/api/assets/asset-invoice-091/transfers")
+      .send({
+        from: "Andina Export SRL",
+        to: "GDESCONOCIDA999NOAUTORIZADAXASSETRA",
+        amount: 25
+      });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("ReceiverNotAuthorized");
+    expect(response.body.isComplianceRejection).toBe(true);
+    expect(response.body.message).toContain("no está autorizada por Compliance");
+  });
+
+  it("blocks transfer to a frozen participant with ReceiverNotAuthorized", async () => {
+    const response = await request(app)
+      .post("/api/assets/asset-invoice-091/transfers")
+      .send({
+        from: "Andina Export SRL",
+        to: "GFRZ8899AABBCCDDEEFF00112233445566778899AABBCCDDEE", // Frost Liquidator (frozen)
+        amount: 10
+      });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("ReceiverNotAuthorized");
+    expect(response.body.isComplianceRejection).toBe(true);
+    expect(response.body.message).toContain("FROZEN");
+  });
+
+  it("updates participant status across the 4 compliance states", async () => {
+    // Freeze participant-aya
+    const freezeRes = await request(app)
+      .patch("/api/assets/asset-invoice-091/participants/participant-aya")
+      .send({ status: "frozen" });
+    expect(freezeRes.status).toBe(200);
+    expect(freezeRes.body.status).toBe("frozen");
+
+    // Revoke participant-aya
+    const revokeRes = await request(app)
+      .patch("/api/assets/asset-invoice-091/participants/participant-aya")
+      .send({ status: "revoked" });
+    expect(revokeRes.status).toBe(200);
+    expect(revokeRes.body.status).toBe("revoked");
+
+    // Re-authorize participant-aya
+    const authRes = await request(app)
+      .patch("/api/assets/asset-invoice-091/participants/participant-aya")
+      .send({ status: "authorized" });
+    expect(authRes.status).toBe(200);
+    expect(authRes.body.status).toBe("authorized");
+  });
 });
+
