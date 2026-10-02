@@ -8,7 +8,8 @@ const createAssetSchema = z.object({
   type: z.enum(["invoice", "bond", "real-estate", "commodity", "carbon-credit"]),
   description: z.string().min(10), issuer: z.string().min(2), custodian: z.string().min(2),
   jurisdiction: z.string().min(2), totalValue: z.number().positive(), currency: z.string().min(2).max(8),
-  supply: z.number().int().positive(), maturityDate: z.string().min(8)
+  supply: z.number().int().positive(), maturityDate: z.string().min(8),
+  creatorWallet: z.string().optional()
 });
 const lifecycleSchema = z.object({ action: z.enum(["mint", "burn", "pause", "unpause", "redeem"]), amount: z.number().positive().optional() });
 const participantSchema = z.object({ name: z.string().min(2), wallet: z.string().min(8), jurisdiction: z.string().min(2), status: z.enum(["pending", "authorized", "revoked", "frozen"]), verifiedAt: z.string().optional() });
