@@ -47,6 +47,7 @@ export interface Asset {
   maturityDate: string;
   status: AssetStatus;
   contractId?: string;
+  creatorWallet?: string;
   documents: DocumentRecord[];
   participants: Participant[];
   activity: ActivityEvent[];
@@ -61,6 +62,7 @@ export interface CreateAssetInput {
   issuer: string;
   custodian: string;
   jurisdiction: string;
+  creatorWallet?: string;
   totalValue: number;
   currency: string;
   supply: number;
