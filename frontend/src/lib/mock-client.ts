@@ -15,7 +15,37 @@ const clone = <T,>(value: T): T => structuredClone(value);
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
 export class MockAssetraClient implements AssetraClient {
-  private assets = clone(demoAssets);
+  private assets: Asset[];
+
+  constructor() {
+    this.assets = this.loadAssets();
+  }
+
+  private loadAssets(): Asset[] {
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        const stored = window.localStorage.getItem("assetra_mock_assets");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {
+        // fallback to default
+      }
+    }
+    return clone(demoAssets);
+  }
+
+  private saveAssets() {
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        window.localStorage.setItem("assetra_mock_assets", JSON.stringify(this.assets));
+      } catch {
+        // fallback
+      }
+    }
+  }
+
   private wait() { return new Promise((resolve) => setTimeout(resolve, 180)); }
 
   async listAssets() {
@@ -54,6 +84,7 @@ export class MockAssetraClient implements AssetraClient {
       createdAt
     };
     this.assets.unshift(asset);
+    this.saveAssets();
     return clone(asset);
   }
 
@@ -68,39 +99,67 @@ export class MockAssetraClient implements AssetraClient {
         throw new Error("AssetNotActive: No se pueden emitir tokens mientras el activo esté en estado '" + asset.status + "'");
       }
       if (!amount || amount <= 0) {
-        throw new Error("InvalidAmount: El monto a emitir debe ser mayor a 0");
+        throw new Error("El monto a emitir debe ser mayor a 0");
       }
       if (asset.mintedSupply + amount > asset.supply) {
-        throw new Error("El monto supera el suministro máximo disponible");
+        throw new Error("No puedes emitir más del suministro total configurado (" + asset.supply + " " + asset.symbol + ")");
       }
       asset.mintedSupply += amount;
+      asset.holderCount = Math.max(1, asset.holderCount);
     }
 
     if (input.action === "burn") {
+      if (asset.status !== "active") {
+        throw new Error("AssetNotActive: No se pueden quemar tokens mientras el activo esté en estado '" + asset.status + "'");
+      }
       if (!amount || amount <= 0) {
-        throw new Error("InvalidAmount: El monto a quemar debe ser mayor a 0");
+        throw new Error("El monto a quemar debe ser mayor a 0");
       }
       if (amount > asset.mintedSupply) {
-        throw new Error("El monto supera el balance emitido");
+        throw new Error("No puedes quemar más del saldo actualmente emitido (" + asset.mintedSupply + " " + asset.symbol + ")");
       }
       asset.mintedSupply -= amount;
     }
 
-    if (input.action === "pause") asset.status = "paused";
-    if (input.action === "unpause") asset.status = "active";
-    if (input.action === "redeem") {
-      asset.mintedSupply = 0;
-      asset.status = "redeemed";
+    if (input.action === "pause") {
+      if (asset.status !== "active") {
+        throw new Error("Solo activos en estado Activo pueden ser pausados");
+      }
+      asset.status = "paused";
     }
+
+    if (input.action === "unpause") {
+      if (asset.status !== "paused") {
+        throw new Error("Solo activos pausados pueden ser reactivados");
+      }
+      asset.status = "active";
+    }
+
+    if (input.action === "redeem") {
+      if (asset.status !== "active" && asset.status !== "paused") {
+        throw new Error("El activo no se encuentra en condiciones de ser redimido");
+      }
+      asset.status = "redeemed";
+      asset.mintedSupply = 0;
+    }
+
+    const actionLabels: Record<string, string> = {
+      mint: `Emisión de ${amount} ${asset.symbol}`,
+      burn: `Quema de ${amount} ${asset.symbol}`,
+      pause: "Activo pausado por el emisor",
+      unpause: "Activo reactivado",
+      redeem: "Liquidación y redención final del activo"
+    };
 
     asset.activity.unshift({
       id: id("evt"),
       type: input.action,
-      label: amount ? `${input.action.toUpperCase()} de ${amount} ${asset.symbol}` : `Activo ${input.action.toUpperCase()}`,
+      label: actionLabels[input.action] ?? `Acción ${input.action}`,
       actor: "Administrador",
       timestamp: new Date().toISOString()
     });
 
+    this.saveAssets();
     return clone(asset);
   }
 
@@ -122,18 +181,15 @@ export class MockAssetraClient implements AssetraClient {
     }
 
     // Regla de Oro de Compliance de Assetra:
-    // Buscar el participante por su wallet pública o por su identificador
     const targetParticipant = asset.participants.find(
       (p) => p.wallet.toLowerCase() === input.to.toLowerCase() || p.id === input.to
     );
 
-    // Si la wallet de destino no está autorizada por Compliance, REVERTIR con ReceiverNotAuthorized
     if (!targetParticipant || targetParticipant.status !== "authorized") {
       const statusNote = targetParticipant ? `(estado actual: '${targetParticipant.status.toUpperCase()}')` : "(no registrada en Whitelist)";
       throw new Error(`ReceiverNotAuthorized: La transacción fue bloqueada por el contrato de reglas de Assetra porque la dirección de destino '${input.to}' no está autorizada por Compliance ${statusNote}.`);
     }
 
-    // Validar cuenta de origen
     const senderParticipant = asset.participants.find(
       (p) => p.wallet.toLowerCase() === input.from.toLowerCase() || p.id === input.from
     );
@@ -145,7 +201,6 @@ export class MockAssetraClient implements AssetraClient {
       throw new Error("SenderNotAuthorized: La autorización de la cuenta emisora fue revocada por Compliance");
     }
 
-    // Generar Hash de Transacción simulado
     const txHash = Array.from(crypto.getRandomValues(new Uint8Array(32)))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
@@ -161,6 +216,7 @@ export class MockAssetraClient implements AssetraClient {
       txHash: txHash.slice(0, 16) + "..."
     });
 
+    this.saveAssets();
     return {
       txHash,
       status: "success",
@@ -176,6 +232,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!asset) throw new Error("Activo no encontrado");
     const participant = { ...input, id: id("participant") };
     asset.participants.push(participant);
+    this.saveAssets();
     return clone(participant);
   }
 
@@ -185,6 +242,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!participant) throw new Error("Participante no encontrado");
     participant.status = status;
     participant.verifiedAt = status === "authorized" ? new Date().toISOString() : participant.verifiedAt;
+    this.saveAssets();
     return clone(participant);
   }
 
@@ -193,6 +251,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!asset) throw new Error("Activo no encontrado");
     const document = { ...input, id: id("doc"), createdAt: new Date().toISOString() };
     asset.documents.push(document);
+    this.saveAssets();
     return clone(document);
   }
 }

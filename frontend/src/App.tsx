@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   Activity, ArrowRight, BadgeCheck, Ban, Blocks, ChevronRight, CircleDollarSign,
-  ExternalLink, FileCheck2, FilePlus2, FileUp, Fingerprint, Lock, Menu, Pause, Play,
+  ExternalLink, FileCheck2, FilePlus2, FileText, FileUp, Fingerprint, Globe, Lock, Menu, Pause, Play,
   Plus, RefreshCw, Send, Server, ShieldAlert, ShieldCheck, Snowflake, Sparkles, UserCheck, UserPlus, Users, Wallet, X
 } from "lucide-react";
 import {
@@ -62,13 +62,19 @@ function Metric({ label, value, note }: { label: string; value: string; note: st
   );
 }
 
-function AssetCard({ asset, onOpen }: { asset: Asset; onOpen: () => void }) {
+function AssetCard({ asset, onOpen, isMine }: { asset: Asset; onOpen: () => void; isMine?: boolean }) {
   const progress = Math.round((asset.mintedSupply / asset.supply) * 100);
   return (
     <button className="asset-card" onClick={onOpen}>
       <div className="asset-card-top">
         <div className="asset-monogram">{asset.symbol.slice(0, 2)}</div>
-        <div><span className="micro-label">{typeLabels[asset.type]}</span><h3>{asset.name}</h3></div>
+        <div>
+          <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+            <span className="micro-label">{typeLabels[asset.type]}</span>
+            {isMine && <span className="ownership-badge" style={{ padding: "2px 6px", fontSize: "8px" }}>Tuyo</span>}
+          </div>
+          <h3>{asset.name}</h3>
+        </div>
         <StatusPill status={asset.status} />
       </div>
       <p>{asset.description}</p>
@@ -99,8 +105,41 @@ export default function App() {
   const [wallet, setWallet] = useState<string | null>(null);
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [clientMode, setClientModeState] = useState<ClientMode>(getClientMode());
+  const [filterScope, setFilterScope] = useState<"all" | "mine">("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "draft" | "paused">("all");
 
-  const selected = useMemo(() => assets.find((asset) => asset.id === selectedId) ?? assets[0], [assets, selectedId]);
+  const isMyAsset = (asset: Asset, userWallet: string | null): boolean => {
+    if (!userWallet) return false;
+    const w = userWallet.trim().toLowerCase();
+    if (asset.creatorWallet && asset.creatorWallet.toLowerCase() === w) return true;
+    if (asset.issuer.toLowerCase() === w) return true;
+    if (asset.participants && asset.participants.some((p) => p.wallet.toLowerCase() === w)) return true;
+
+    // Cuentas conocidas de prueba para demo en Testnet:
+    if (w.startsWith("gdkm") && (asset.id.includes("invoice") || asset.issuer.toLowerCase().includes("andina"))) return true;
+    if (w.startsWith("gcrv") && asset.participants?.some((p) => p.wallet.toLowerCase().startsWith("gcrv"))) return true;
+    if (w.startsWith("gayk") && asset.participants?.some((p) => p.wallet.toLowerCase().startsWith("gayk"))) return true;
+    if (w.startsWith("gb72")) return true;
+
+    return false;
+  };
+
+  const myAssets = useMemo(() => {
+    if (!wallet) return [];
+    return assets.filter((asset) => isMyAsset(asset, wallet));
+  }, [assets, wallet]);
+
+  const displayedAssets = useMemo(() => {
+    let list = filterScope === "mine" ? myAssets : assets;
+    if (filterStatus !== "all") {
+      list = list.filter((a) => a.status === filterStatus);
+    }
+    return list;
+  }, [filterScope, filterStatus, assets, myAssets]);
+
+  const selected = useMemo(() => {
+    return displayedAssets.find((asset) => asset.id === selectedId) ?? displayedAssets[0] ?? assets[0];
+  }, [displayedAssets, selectedId, assets]);
 
   useEffect(() => {
     checkBackendHealth().then((res) => {
@@ -318,17 +357,84 @@ export default function App() {
 
           {view === "assets" && (
             <section className="page-section">
-              <PageHeading eyebrow="CONTROL DE CICLO DE VIDA" title="Activos" copy="Selecciona un activo para consultar su respaldo, suministro, participantes y controles administrativos." action={<button className="primary" onClick={() => navigate("create")}><Plus size={18} /> Nuevo activo</button>} />
-              <div className="asset-grid compact-grid">{assets.map((asset) => <AssetCard key={asset.id} asset={asset} onOpen={() => setSelectedId(asset.id)} />)}</div>
-              {selected && (
-                <AssetDetail
-                  asset={selected}
-                  busy={busy}
-                  connectedWallet={wallet}
-                  onAction={runAction}
-                  onTransferSuccess={refreshSelected}
-                  onNavigateToParticipants={() => navigate("participants")}
-                />
+              <PageHeading
+                eyebrow="CONTROL DE CICLO DE VIDA"
+                title="Activos"
+                copy="Selecciona un activo para consultar su respaldo, suministro, participantes y controles administrativos."
+                action={<button className="primary" onClick={() => navigate("create")}><Plus size={18} /> Nuevo activo</button>}
+              />
+
+              <div className="catalog-toolbar">
+                <div className="filter-scope-group">
+                  <button
+                    className={`scope-pill ${filterScope === "all" ? "active" : ""}`}
+                    onClick={() => setFilterScope("all")}
+                  >
+                    <Globe size={15} /> Catálogo Global ({assets.length})
+                  </button>
+                  <button
+                    className={`scope-pill ${filterScope === "mine" ? "active" : ""}`}
+                    onClick={() => setFilterScope("mine")}
+                  >
+                    <UserCheck size={15} /> Mis Activos ({wallet ? myAssets.length : 0})
+                  </button>
+                </div>
+
+                <div className="filter-status-group">
+                  {(["all", "active", "draft", "paused"] as const).map((st) => (
+                    <button
+                      key={st}
+                      className={`status-chip ${filterStatus === st ? "active" : ""}`}
+                      onClick={() => setFilterStatus(st)}
+                    >
+                      {st === "all" ? "Todos" : statusLabels[st as AssetStatus] ?? st}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {filterScope === "mine" && !wallet ? (
+                <div className="wallet-prompt-box">
+                  <Wallet size={28} />
+                  <div>
+                    <h4>Conecta tu wallet para gestionar tus activos</h4>
+                    <p>Visualiza tus emisiones, participaciones y activos en borrador privados.</p>
+                  </div>
+                  <button className="primary" onClick={connectFreighter} disabled={walletConnecting}>
+                    {walletConnecting ? "Conectando..." : "Conectar Freighter"}
+                  </button>
+                </div>
+              ) : displayedAssets.length === 0 ? (
+                <div className="empty-assets-box">
+                  <FileText size={28} />
+                  <h4>No se encontraron activos</h4>
+                  <p>{filterScope === "mine" ? "No tienes activos registrados con esta wallet todavía." : "No hay activos disponibles con el filtro actual."}</p>
+                  <button className="primary" onClick={() => navigate("create")}><Plus size={16} /> Registrar nuevo activo</button>
+                </div>
+              ) : (
+                <>
+                  <div className="asset-grid compact-grid">
+                    {displayedAssets.map((asset) => (
+                      <AssetCard
+                        key={asset.id}
+                        asset={asset}
+                        isMine={isMyAsset(asset, wallet)}
+                        onOpen={() => setSelectedId(asset.id)}
+                      />
+                    ))}
+                  </div>
+
+                  {selected && (
+                    <AssetDetail
+                      asset={selected}
+                      busy={busy}
+                      connectedWallet={wallet}
+                      onAction={runAction}
+                      onTransferSuccess={refreshSelected}
+                      onNavigateToParticipants={() => navigate("participants")}
+                    />
+                  )}
+                </>
               )}
             </section>
           )}
@@ -343,7 +449,17 @@ export default function App() {
           )}
 
           {view === "create" && (
-            <CreateAssetView onCancel={() => navigate("dashboard")} onCreated={(asset) => { setAssets((items) => [asset, ...items]); setSelectedId(asset.id); setToast("Activo creado como borrador"); navigate("assets"); }} />
+            <CreateAssetView
+              connectedWallet={wallet}
+              onCancel={() => navigate("dashboard")}
+              onCreated={(asset) => {
+                setAssets((items) => [asset, ...items]);
+                setSelectedId(asset.id);
+                setFilterScope("mine");
+                setToast("Activo creado como borrador");
+                navigate("assets");
+              }}
+            />
           )}
         </main>
       )}
@@ -571,10 +687,16 @@ function AssetDetail({
               <span className="mono" style={{ fontSize: "11px", color: "var(--red)", fontWeight: "bold" }}>
                 {transferError.includes("ReceiverNotAuthorized")
                   ? "ERROR: ReceiverNotAuthorized"
+                  : transferError.includes("SenderNotAuthorized")
+                  ? "ERROR: SenderNotAuthorized"
+                  : transferError.includes("InsufficientBalance")
+                  ? "ERROR: InsufficientBalance"
                   : transferError.includes("WalletFrozen")
                   ? "ERROR: WalletFrozen"
                   : transferError.includes("AssetNotActive")
                   ? "ERROR: AssetNotActive"
+                  : transferError.includes("AssetPaused")
+                  ? "ERROR: AssetPaused"
                   : "ERROR: ComplianceRuleViolation"}
               </span>
             </div>
@@ -783,7 +905,15 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
 }
 
 
-function CreateAssetView({ onCancel, onCreated }: { onCancel: () => void; onCreated: (asset: Asset) => void }) {
+function CreateAssetView({
+  connectedWallet,
+  onCancel,
+  onCreated,
+}: {
+  connectedWallet?: string | null;
+  onCancel: () => void;
+  onCreated: (asset: Asset) => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState(1);
   const [formError, setFormError] = useState<string | null>(null);
@@ -806,7 +936,13 @@ function CreateAssetView({ onCancel, onCreated }: { onCancel: () => void; onCrea
     if (!form.issuer.trim() || !form.custodian.trim() || !form.jurisdiction.trim()) {
       setFormError("Completa la entidad emisora, el custodio y la jurisdicción."); setBusy(false); return;
     }
-    try { onCreated(await assetraClient.createAsset(form)); }
+    try {
+      const payload: CreateAssetInput = {
+        ...form,
+        creatorWallet: connectedWallet ?? undefined,
+      };
+      onCreated(await assetraClient.createAsset(payload));
+    }
     catch (reason) { setFormError(reason instanceof Error ? reason.message : "No fue posible crear el activo"); }
     finally { setBusy(false); }
   };
