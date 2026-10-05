@@ -1,5 +1,5 @@
 export type AssetStatus = "draft" | "active" | "paused" | "redeemed";
-export type ParticipantStatus = "pending" | "authorized" | "suspended";
+export type ParticipantStatus = "pending" | "authorized" | "revoked" | "frozen";
 export type AssetType = "invoice" | "bond" | "real-estate" | "commodity" | "carbon-credit";
 
 export interface DocumentRecord {
@@ -47,6 +47,7 @@ export interface Asset {
   maturityDate: string;
   status: AssetStatus;
   contractId?: string;
+  creatorWallet?: string;
   documents: DocumentRecord[];
   participants: Participant[];
   activity: ActivityEvent[];
@@ -61,6 +62,7 @@ export interface CreateAssetInput {
   issuer: string;
   custodian: string;
   jurisdiction: string;
+  creatorWallet?: string;
   totalValue: number;
   currency: string;
   supply: number;
@@ -69,3 +71,19 @@ export interface CreateAssetInput {
 
 export type LifecycleAction = "mint" | "burn" | "pause" | "unpause" | "redeem";
 export interface LifecycleActionInput { action: LifecycleAction; amount?: number; }
+
+export interface TransferInput {
+  from: string;
+  to: string;
+  amount: number;
+}
+
+export interface TransferResult {
+  txHash: string;
+  status: "success";
+  from: string;
+  to: string;
+  amount: number;
+  timestamp: string;
+}
+
