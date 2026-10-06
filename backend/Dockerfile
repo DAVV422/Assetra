@@ -40,9 +40,9 @@ RUN npm install --omit=dev
 # Copiar archivos compilados desde el builder
 COPY --from=builder /app/dist ./dist
 
-# Copiar configuración de contratos y directorio de datos para persistencia
+# Copiar configuración de contratos y asegurar directorio de datos
 COPY contracts.json ./contracts.json
-COPY data ./data
+RUN mkdir -p data
 
 EXPOSE 4000
 
