@@ -12,6 +12,7 @@ import {
 import { OrbitalLines } from "./components/OrbitalLines";
 import assetraLogo from "./assetra-logo.png";
 import { apiUrl, assetraClient, checkBackendHealth, getClientMode, setClientMode, type ClientMode } from "./lib/client";
+import { cacheCustomAssetLocally, getCachedCustomAssets } from "./lib/http-client";
 import type {
   Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus, TransferResult
 } from "./types";
@@ -92,22 +93,72 @@ function EmptyState({ title, copy }: { title: string; copy: string }) {
   return <div className="empty-state"><Blocks size={30} /><h3>{title}</h3><p>{copy}</p></div>;
 }
 
+const getMyCreatedAssetIds = (): string[] => {
+  if (typeof window === "undefined" || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem("assetra_my_created_asset_ids");
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+};
+
+const addMyCreatedAssetId = (id: string) => {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    const current = getMyCreatedAssetIds();
+    if (!current.includes(id)) {
+      current.push(id);
+      window.localStorage.setItem("assetra_my_created_asset_ids", JSON.stringify(current));
+    }
+  } catch {
+    // ignore
+  }
+};
+
 export default function App() {
-  const [view, setView] = useState<View>("dashboard");
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [selectedId, setSelectedId] = useState("asset-invoice-091");
+  const [view, setView] = useState<View>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("assetra_current_view") as View | null;
+      if (saved && ["dashboard", "assets", "participants", "documents", "create"].includes(saved)) {
+        return saved;
+      }
+    }
+    return "dashboard";
+  });
+  const [assets, setAssets] = useState<Asset[]>(() => {
+    return getCachedCustomAssets();
+  });
+  const [selectedId, setSelectedId] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("assetra_selected_asset_id") || "asset-invoice-091";
+    }
+    return "asset-invoice-091";
+  });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [wallet, setWallet] = useState<string | null>(null);
+  const [wallet, setWallet] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("assetra_connected_wallet");
+    }
+    return null;
+  });
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [clientMode, setClientModeState] = useState<ClientMode>(getClientMode());
-  const [filterScope, setFilterScope] = useState<"all" | "mine">("all");
+  const [filterScope, setFilterScope] = useState<"all" | "mine">(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("assetra_filter_scope") as "all" | "mine" | null;
+      if (saved === "all" || saved === "mine") return saved;
+    }
+    return "all";
+  });
   const [filterStatus, setFilterStatus] = useState<"all" | "active" | "draft" | "paused">("all");
 
   const isMyAsset = (asset: Asset, userWallet: string | null): boolean => {
+    if (getMyCreatedAssetIds().includes(asset.id)) return true;
     if (!userWallet) return false;
     const w = userWallet.trim().toLowerCase();
     if (asset.creatorWallet && asset.creatorWallet.toLowerCase() === w) return true;
@@ -124,7 +175,6 @@ export default function App() {
   };
 
   const myAssets = useMemo(() => {
-    if (!wallet) return [];
     return assets.filter((asset) => isMyAsset(asset, wallet));
   }, [assets, wallet]);
 
@@ -147,8 +197,20 @@ export default function App() {
       }
     });
     assetraClient.listAssets()
-      .then((data) => { setAssets(data); if (data[0] && !data.some((item) => item.id === selectedId)) setSelectedId(data[0].id); })
-      .catch((reason: Error) => setError(reason.message))
+      .then((data) => {
+        setAssets(data);
+        if (data[0] && !data.some((item) => item.id === selectedId)) {
+          setSelectedId(data[0].id);
+        }
+      })
+      .catch((reason: Error) => {
+        const cached = getCachedCustomAssets();
+        if (cached.length > 0) {
+          setAssets(cached);
+        } else {
+          setError(reason.message);
+        }
+      })
       .finally(() => setLoading(false));
   }, [clientMode]);
 
@@ -199,6 +261,31 @@ export default function App() {
   };
 
 
+  const updateWallet = (newWallet: string | null) => {
+    setWallet(newWallet);
+    if (typeof window !== "undefined") {
+      if (newWallet) {
+        localStorage.setItem("assetra_connected_wallet", newWallet);
+      } else {
+        localStorage.removeItem("assetra_connected_wallet");
+      }
+    }
+  };
+
+  const selectAsset = (id: string) => {
+    setSelectedId(id);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("assetra_selected_asset_id", id);
+    }
+  };
+
+  const changeFilterScope = (scope: "all" | "mine") => {
+    setFilterScope(scope);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("assetra_filter_scope", scope);
+    }
+  };
+
   const connectFreighter = async () => {
     setWalletConnecting(true);
     try {
@@ -208,24 +295,24 @@ export default function App() {
         const accessObj = await requestFreighterAccess();
         const addr = typeof accessObj === "object" ? accessObj?.address : accessObj;
         if (addr) {
-          setWallet(addr);
+          updateWallet(addr);
           setToast("Wallet Freighter conectada correctamente");
           return;
         }
         const directAddr = await getFreighterAddress();
         const direct = typeof directAddr === "object" ? directAddr?.address : directAddr;
         if (direct) {
-          setWallet(direct);
+          updateWallet(direct);
           setToast("Wallet Freighter conectada correctamente");
           return;
         }
       }
       const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
-      setWallet(demoWallet);
+      updateWallet(demoWallet);
       setToast("Freighter no detectado: conectada wallet demo Testnet (GB72...BOI4)");
     } catch {
       const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
-      setWallet(demoWallet);
+      updateWallet(demoWallet);
       setToast("Modo Testnet: conectada wallet demo (GB72...BOI4)");
     } finally {
       setWalletConnecting(false);
@@ -233,18 +320,25 @@ export default function App() {
   };
 
   const disconnectWallet = () => {
-    setWallet(null);
+    updateWallet(null);
     setToast("Wallet desconectada");
   };
 
   const navigate = (next: View) => {
-    setView(next); setMenuOpen(false); setError(null); window.scrollTo({ top: 0, behavior: "smooth" });
+    setView(next);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("assetra_current_view", next);
+    }
+    setMenuOpen(false);
+    setError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const replaceAsset = (asset: Asset) => setAssets((current) => current.map((item) => item.id === asset.id ? asset : item));
 
   const openAsset = (asset: Asset) => {
-    setSelectedId(asset.id); navigate("assets");
+    selectAsset(asset.id);
+    navigate("assets");
   };
 
   const refreshSelected = async () => {
@@ -367,15 +461,15 @@ export default function App() {
                 <div className="filter-scope-group">
                   <button
                     className={`scope-pill ${filterScope === "all" ? "active" : ""}`}
-                    onClick={() => setFilterScope("all")}
+                    onClick={() => changeFilterScope("all")}
                   >
                     <Globe size={15} /> Catálogo Global ({assets.length})
                   </button>
                   <button
                     className={`scope-pill ${filterScope === "mine" ? "active" : ""}`}
-                    onClick={() => setFilterScope("mine")}
+                    onClick={() => changeFilterScope("mine")}
                   >
-                    <UserCheck size={15} /> Mis Activos ({wallet ? myAssets.length : 0})
+                    <UserCheck size={15} /> Mis Activos ({myAssets.length})
                   </button>
                 </div>
 
@@ -392,7 +486,7 @@ export default function App() {
                 </div>
               </div>
 
-              {filterScope === "mine" && !wallet ? (
+              {filterScope === "mine" && !wallet && myAssets.length === 0 ? (
                 <div className="wallet-prompt-box">
                   <Wallet size={28} />
                   <div>
@@ -407,18 +501,31 @@ export default function App() {
                 <div className="empty-assets-box">
                   <FileText size={28} />
                   <h4>No se encontraron activos</h4>
-                  <p>{filterScope === "mine" ? "No tienes activos registrados con esta wallet todavía." : "No hay activos disponibles con el filtro actual."}</p>
+                  <p>{filterScope === "mine" ? "No tienes activos registrados todavía en este navegador." : "No hay activos disponibles con el filtro actual."}</p>
                   <button className="primary" onClick={() => navigate("create")}><Plus size={16} /> Registrar nuevo activo</button>
                 </div>
               ) : (
                 <>
+                  {filterScope === "mine" && !wallet && myAssets.length > 0 && (
+                    <div className="wallet-prompt-box" style={{ marginBottom: "1rem" }}>
+                      <Wallet size={24} />
+                      <div>
+                        <h4>Wallet no vinculada en esta sesión</h4>
+                        <p>Tus activos creados están listados a continuación. Conecta Freighter para firmar nuevas emisiones o transferencias.</p>
+                      </div>
+                      <button className="primary" onClick={connectFreighter} disabled={walletConnecting}>
+                        {walletConnecting ? "Conectando..." : "Conectar Freighter"}
+                      </button>
+                    </div>
+                  )}
+
                   <div className="asset-grid compact-grid">
                     {displayedAssets.map((asset) => (
                       <AssetCard
                         key={asset.id}
                         asset={asset}
                         isMine={isMyAsset(asset, wallet)}
-                        onOpen={() => setSelectedId(asset.id)}
+                        onOpen={() => selectAsset(asset.id)}
                       />
                     ))}
                   </div>
@@ -440,11 +547,11 @@ export default function App() {
 
 
           {view === "participants" && selected && (
-            <ParticipantsView assets={assets} selected={selected} onSelect={setSelectedId} onChanged={refreshSelected} onToast={setToast} />
+            <ParticipantsView assets={assets} selected={selected} onSelect={selectAsset} onChanged={refreshSelected} onToast={setToast} />
           )}
 
           {view === "documents" && selected && (
-            <DocumentsView assets={assets} selected={selected} onSelect={setSelectedId} onChanged={refreshSelected} onToast={setToast} />
+            <DocumentsView assets={assets} selected={selected} onSelect={selectAsset} onChanged={refreshSelected} onToast={setToast} />
           )}
 
           {view === "create" && (
@@ -452,9 +559,11 @@ export default function App() {
               connectedWallet={wallet}
               onCancel={() => navigate("dashboard")}
               onCreated={(asset) => {
-                setAssets((items) => [asset, ...items]);
-                setSelectedId(asset.id);
-                setFilterScope("mine");
+                addMyCreatedAssetId(asset.id);
+                cacheCustomAssetLocally(asset);
+                setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+                selectAsset(asset.id);
+                changeFilterScope("mine");
                 setToast("Activo creado como borrador");
                 navigate("assets");
               }}
@@ -936,9 +1045,11 @@ function CreateAssetView({
       setFormError("Completa la entidad emisora, el custodio y la jurisdicción."); setBusy(false); return;
     }
     try {
+      const storedWallet = typeof window !== "undefined" ? localStorage.getItem("assetra_connected_wallet") : null;
+      const effectiveWallet = connectedWallet || storedWallet;
       const payload: CreateAssetInput = {
         ...form,
-        creatorWallet: connectedWallet ?? undefined,
+        creatorWallet: effectiveWallet ?? undefined,
       };
       onCreated(await assetraClient.createAsset(payload));
     }

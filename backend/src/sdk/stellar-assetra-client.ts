@@ -77,9 +77,19 @@ export class StellarAssetraClient implements AssetraClient {
   }
 
   private getStoragePath(): string {
-    const fromCwd = path.resolve(process.cwd(), "data/assets-store.json");
-    if (fs.existsSync(path.dirname(fromCwd))) return fromCwd;
-    return path.resolve(import.meta.dirname, "../../data/assets-store.json");
+    const candidates = [
+      path.resolve(process.cwd(), "backend/data/assets-store.json"),
+      path.resolve(process.cwd(), "data/assets-store.json"),
+      path.resolve(import.meta.dirname, "../../data/assets-store.json"),
+      path.resolve(import.meta.dirname, "../../../data/assets-store.json")
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    for (const c of candidates) {
+      if (fs.existsSync(path.dirname(c))) return c;
+    }
+    return candidates[0];
   }
 
   private loadAssets(): Asset[] {
@@ -223,6 +233,10 @@ export class StellarAssetraClient implements AssetraClient {
 
 
   async listAssets(): Promise<Asset[]> {
+    const fresh = this.loadAssets();
+    if (fresh && fresh.length > 0) {
+      this.assets = fresh;
+    }
     return clone(this.assets);
   }
 

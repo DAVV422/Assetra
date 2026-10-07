@@ -1,4 +1,5 @@
 import { demoAssets } from "../data";
+import { cacheCustomAssetLocally, getCachedCustomAssets, mergeWithCachedAssets } from "./http-client";
 import type {
   Asset,
   CreateAssetInput,
@@ -22,18 +23,19 @@ export class MockAssetraClient implements AssetraClient {
   }
 
   private loadAssets(): Asset[] {
+    let list: Asset[] = clone(demoAssets);
     if (typeof window !== "undefined" && window.localStorage) {
       try {
         const stored = window.localStorage.getItem("assetra_mock_assets");
         if (stored) {
           const parsed = JSON.parse(stored);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          if (Array.isArray(parsed) && parsed.length > 0) list = parsed;
         }
       } catch {
         // fallback to default
       }
     }
-    return clone(demoAssets);
+    return mergeWithCachedAssets(list);
   }
 
   private saveAssets() {
@@ -85,6 +87,7 @@ export class MockAssetraClient implements AssetraClient {
     };
     this.assets.unshift(asset);
     this.saveAssets();
+    cacheCustomAssetLocally(asset);
     return clone(asset);
   }
 
@@ -160,6 +163,7 @@ export class MockAssetraClient implements AssetraClient {
     });
 
     this.saveAssets();
+    cacheCustomAssetLocally(asset);
     return clone(asset);
   }
 
@@ -217,6 +221,7 @@ export class MockAssetraClient implements AssetraClient {
     });
 
     this.saveAssets();
+    cacheCustomAssetLocally(asset);
     return {
       txHash,
       status: "success",
@@ -233,6 +238,7 @@ export class MockAssetraClient implements AssetraClient {
     const participant = { ...input, id: id("participant") };
     asset.participants.push(participant);
     this.saveAssets();
+    cacheCustomAssetLocally(asset);
     return clone(participant);
   }
 
@@ -243,6 +249,7 @@ export class MockAssetraClient implements AssetraClient {
     participant.status = status;
     participant.verifiedAt = status === "authorized" ? new Date().toISOString() : participant.verifiedAt;
     this.saveAssets();
+    if (asset) cacheCustomAssetLocally(asset);
     return clone(participant);
   }
 
@@ -252,6 +259,7 @@ export class MockAssetraClient implements AssetraClient {
     const document = { ...input, id: id("doc"), createdAt: new Date().toISOString() };
     asset.documents.push(document);
     this.saveAssets();
+    cacheCustomAssetLocally(asset);
     return clone(document);
   }
 }
