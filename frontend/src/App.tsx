@@ -557,7 +557,7 @@ function AssetDetail({
         </div>
         <div className="action-block">
           <h3><Activity size={20} /> Controles administrativos</h3>
-          <label><span>CANTIDAD</span><input type="number" min="1" value={amount} onChange={(event) => setAmount(Number(event.target.value))} /></label>
+          <label><span>CANTIDAD</span><input type="number" min="1" value={amount || ""} onChange={(event) => setAmount(Number(event.target.value))} /></label>
           <div className="action-grid">
             <button disabled={busy || asset.status === "redeemed"} onClick={() => onAction("mint", amount)}><Plus /> Mint</button>
             <button disabled={busy || !asset.mintedSupply} onClick={() => onAction("burn", amount)}><Ban /> Burn</button>
@@ -632,7 +632,7 @@ function AssetDetail({
                 type="number"
                 min="1"
                 max={asset.mintedSupply || 100000}
-                value={transferAmount}
+                value={transferAmount || ""}
                 onChange={(e) => setTransferAmount(Number(e.target.value))}
               />
             </label>
@@ -957,9 +957,9 @@ function CreateAssetView({
           <label className="span-2"><span>DESCRIPCIÓN DEL DERECHO REPRESENTADO</span><textarea required minLength={10} value={form.description} onChange={(event) => update("description", event.target.value)} placeholder="Describe exactamente qué derecho representa el token…" /></label>
         </div>}
         {step === 2 && <div className="form-grid">
-          <label><span>VALOR TOTAL</span><input required type="number" min="1" value={form.totalValue} onChange={(event) => update("totalValue", Number(event.target.value))} /></label>
+          <label><span>VALOR TOTAL</span><input required type="number" min="1" value={form.totalValue || ""} onChange={(event) => update("totalValue", Number(event.target.value))} /></label>
           <label><span>MONEDA</span><select value={form.currency} onChange={(event) => update("currency", event.target.value)}><option>USDC</option><option>USD</option><option>EUR</option></select></label>
-          <label><span>SUMINISTRO MÁXIMO</span><input required type="number" min="1" value={form.supply} onChange={(event) => update("supply", Number(event.target.value))} /></label>
+          <label><span>SUMINISTRO MÁXIMO</span><input required type="number" min="1" value={form.supply || ""} onChange={(event) => update("supply", Number(event.target.value))} /></label>
           <label><span>FECHA DE VENCIMIENTO</span><input required type="date" value={form.maturityDate} onChange={(event) => update("maturityDate", event.target.value)} /></label>
           <div className="calculation-card span-2"><Sparkles /><div><span>CADA TOKEN REPRESENTA</span><b>{money(form.totalValue / Math.max(form.supply, 1), form.currency)}</b><small>Valor referencial del MVP</small></div></div>
         </div>}
