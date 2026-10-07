@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { demoAssets } from "../fixtures.js";
 import type { AssetraClient } from "./assetra-client.js";
@@ -15,9 +17,63 @@ import type {
 const clone = <T>(value: T): T => structuredClone(value);
 
 export class MockAssetraClient implements AssetraClient {
-  private assets = clone(demoAssets);
+  private assets: Asset[];
 
-  async listAssets(): Promise<Asset[]> { return clone(this.assets); }
+  constructor() {
+    this.assets = this.loadAssets();
+  }
+
+  private getStoragePath(): string {
+    const candidates = [
+      path.resolve(process.cwd(), "backend/data/assets-store.json"),
+      path.resolve(process.cwd(), "data/assets-store.json"),
+      path.resolve(import.meta.dirname, "../../data/assets-store.json"),
+      path.resolve(import.meta.dirname, "../../../data/assets-store.json")
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    for (const c of candidates) {
+      if (fs.existsSync(path.dirname(c))) return c;
+    }
+    return candidates[0];
+  }
+
+  private loadAssets(): Asset[] {
+    if (process.env.NODE_ENV === "test") return clone(demoAssets);
+    const sPath = this.getStoragePath();
+    if (fs.existsSync(sPath)) {
+      try {
+        const raw = fs.readFileSync(sPath, "utf8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (err) {
+        console.error("Warning: Could not read mock assets storage:", err);
+      }
+    }
+    return clone(demoAssets);
+  }
+
+  private saveAssets() {
+    if (process.env.NODE_ENV === "test") return;
+    try {
+      const sPath = this.getStoragePath();
+      fs.mkdirSync(path.dirname(sPath), { recursive: true });
+      fs.writeFileSync(sPath, JSON.stringify(this.assets, null, 2), "utf8");
+    } catch (err) {
+      console.error("Warning: Could not save mock assets:", err);
+    }
+  }
+
+  async listAssets(): Promise<Asset[]> {
+    if (process.env.NODE_ENV !== "test") {
+      const fresh = this.loadAssets();
+      if (fresh && fresh.length > 0) this.assets = fresh;
+    }
+    return clone(this.assets);
+  }
 
   async getAsset(assetId: string): Promise<Asset> {
     const asset = this.assets.find((item) => item.id === assetId);
@@ -40,6 +96,7 @@ export class MockAssetraClient implements AssetraClient {
       createdAt
     };
     this.assets.unshift(asset);
+    this.saveAssets();
     return clone(asset);
   }
 
@@ -64,6 +121,7 @@ export class MockAssetraClient implements AssetraClient {
       label: amount ? `${input.action} de ${amount} ${asset.symbol}` : `Activo ${input.action}`,
       actor: "Administrador", timestamp: new Date().toISOString()
     });
+    this.saveAssets();
     return clone(asset);
   }
 
@@ -115,6 +173,7 @@ export class MockAssetraClient implements AssetraClient {
       txHash: txHash.slice(0, 16) + "..."
     });
 
+    this.saveAssets();
     return {
       txHash,
       status: "success",
@@ -131,6 +190,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!asset) throw new Error("ASSET_NOT_FOUND");
     const participant = { ...input, id: `participant-${randomUUID()}` };
     asset.participants.push(participant);
+    this.saveAssets();
     return clone(participant);
   }
 
@@ -141,6 +201,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!participant) throw new Error("PARTICIPANT_NOT_FOUND");
     participant.status = status;
     participant.verifiedAt = status === "authorized" ? new Date().toISOString() : participant.verifiedAt;
+    this.saveAssets();
     return clone(participant);
   }
 
@@ -149,6 +210,7 @@ export class MockAssetraClient implements AssetraClient {
     if (!asset) throw new Error("ASSET_NOT_FOUND");
     const document = { ...input, id: `doc-${randomUUID()}`, createdAt: new Date().toISOString() };
     asset.documents.push(document);
+    this.saveAssets();
     return clone(document);
   }
 }
