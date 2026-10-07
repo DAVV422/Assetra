@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { demoAssets } from "../fixtures.js";
 import type { AssetraClient } from "./assetra-client.js";
@@ -14,6 +15,16 @@ import type {
   TransferInput,
   TransferResult
 } from "../types.js";
+
+const defaultIdentities: Record<string, string> = {
+  admin: 'seed_phrase = "strike virtual program clip want frog legal tattoo pumpkin trap member clog equip despair phone danger twenty hover pass reflect glare marine rebuild robust"\n',
+  compliance: 'seed_phrase = "garden quiz trick twelve name burden dry hair stay clarify simple school unfair shed cupboard model voyage demand announce naive shine clap there hub"\n',
+  issuer: 'seed_phrase = "answer magnet holiday hospital jeans sphere trigger museum narrow van purpose sugar correct page offer stable hurt custom call voyage squirrel also old sudden"\n',
+  "admin-elite": 'seed_phrase = "marine multiply shield ethics gasp also stadium park regular emerge rotate speak entry social various lounge phrase assume base camp rib reduce lion world"\n',
+  user1: 'seed_phrase = "alone symptom grain lake bridge crush giraffe tiger funny autumn banana copy file attract lizard happy coast spare total maple bubble volume session lake"\n',
+  wallet_a: 'seed_phrase = "coast gym senior donor minute oven reward title custom lion member betray repeat mushroom supreme middle away accuse universe quantum panther scare crawl power"\n',
+  wallet_b: 'seed_phrase = "bundle midnight vacuum fashion segment camp worry lottery monitor theme run tennis already clip donkey minor receive mix taxi version enjoy admit replace badge"\n'
+};
 
 interface ContractsConfig {
   network: string;
@@ -39,10 +50,30 @@ export class StellarAssetraClient implements AssetraClient {
   private assets: Asset[];
 
   constructor() {
+    this.ensureIdentitiesConfigured();
     this.config = this.loadConfig();
     this.assets = this.loadAssets();
     this.syncInitialAssets();
     this.saveAssets();
+  }
+
+  private ensureIdentitiesConfigured() {
+    try {
+      const configDir = process.env.XDG_CONFIG_HOME
+        ? path.join(process.env.XDG_CONFIG_HOME, "stellar", "identity")
+        : path.join(os.homedir(), ".config", "stellar", "identity");
+
+      fs.mkdirSync(configDir, { recursive: true });
+
+      for (const [name, content] of Object.entries(defaultIdentities)) {
+        const filePath = path.join(configDir, `${name}.toml`);
+        if (!fs.existsSync(filePath)) {
+          fs.writeFileSync(filePath, content, "utf8");
+        }
+      }
+    } catch (err: any) {
+      console.warn("Notice: Could not automatically provision Stellar identities:", err.message);
+    }
   }
 
   private getStoragePath(): string {
