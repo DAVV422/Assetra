@@ -1,5 +1,7 @@
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
+import { rateLimit } from "express-rate-limit";
+import helmet from "helmet";
 import { z } from "zod";
 import type { AssetraClient } from "./sdk/assetra-client.js";
 
@@ -34,11 +36,53 @@ const documentSchema = z.object({
 
 const complianceErrors = ["ReceiverNotAuthorized", "WalletFrozen", "SenderNotAuthorized"];
 
-export function createApp(client: AssetraClient) {
+export interface AppOptions {
+  /** Peticiones por minuto y por IP a la API (lecturas + escrituras). */
+  readsPerMinute?: number;
+  /** Escrituras (POST/PATCH) por minuto y por IP. */
+  writesPerMinute?: number;
+  /** Proxies de confianza delante de la API (Koyeb, Nginx…): necesario para identificar la IP real. */
+  trustProxy?: number;
+}
+
+const envInt = (name: string, fallback: number) => {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
+};
+
+function limiter(limit: number, methods?: string[]) {
+  return rateLimit({
+    windowMs: 60_000,
+    limit,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    skip: methods ? (request) => !methods.includes(request.method) : undefined,
+    handler: (_request, response) => {
+      response.status(429).json({
+        error: "RATE_LIMITED",
+        message: "Demasiadas peticiones desde esta dirección. Intenta de nuevo en un minuto."
+      });
+    }
+  });
+}
+
+export function createApp(client: AssetraClient, options: AppOptions = {}) {
+  const readsPerMinute = options.readsPerMinute ?? envInt("RATE_LIMIT_PER_MINUTE", 300);
+  const writesPerMinute = options.writesPerMinute ?? envInt("RATE_LIMIT_WRITES_PER_MINUTE", 30);
+  const trustProxy = options.trustProxy ?? envInt("TRUST_PROXY", 0);
+
   const app = express();
-  app.disable("x-powered-by");
+  if (trustProxy > 0) app.set("trust proxy", trustProxy);
+
+  // Cabeceras de seguridad HTTP (incluye la eliminación de X-Powered-By)
+  app.use(helmet());
   // Sin cookies ni sesiones: no se necesitan credenciales CORS
   app.use(cors({ origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : true }));
+
+  // Límites por IP. /health queda fuera para no interferir con los healthchecks de la plataforma.
+  if (readsPerMinute > 0) app.use("/api", limiter(readsPerMinute));
+  if (writesPerMinute > 0) app.use("/api", limiter(writesPerMinute, ["POST", "PATCH", "PUT", "DELETE"]));
+
   app.use(express.json({ limit: "100kb" }));
 
   app.get("/health", (_request, response) => response.json({ status: "ok", service: "assetra-api", mode: process.env.ASSETRA_MODE ?? "mock" }));

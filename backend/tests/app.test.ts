@@ -107,3 +107,42 @@ describe("Assetra API", () => {
 });
 
 
+describe("Seguridad HTTP", () => {
+  it("envía cabeceras de seguridad y oculta X-Powered-By", async () => {
+    const response = await request(app).get("/health");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["strict-transport-security"]).toContain("max-age=");
+    expect(response.headers["content-security-policy"]).toContain("default-src 'self'");
+    expect(response.headers["x-powered-by"]).toBeUndefined();
+  });
+
+  it("limita las peticiones por IP con 429 RATE_LIMITED", async () => {
+    const limited = createApp(new MockAssetraClient(), { readsPerMinute: 3, writesPerMinute: 0 });
+    for (let i = 0; i < 3; i++) expect((await request(limited).get("/api/assets")).status).toBe(200);
+    const blocked = await request(limited).get("/api/assets");
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.error).toBe("RATE_LIMITED");
+    expect(blocked.headers["retry-after"]).toBeDefined();
+  });
+
+  it("aplica un límite más estricto a las escrituras sin afectar las lecturas", async () => {
+    const limited = createApp(new MockAssetraClient(), { readsPerMinute: 100, writesPerMinute: 1 });
+    const action = () => request(limited).post("/api/assets/asset-invoice-091/actions").send({ action: "pause" });
+    expect((await action()).status).toBe(200);
+    expect((await action()).status).toBe(429);
+    expect((await request(limited).get("/api/assets")).status).toBe(200);
+  });
+
+  it("detrás de un proxy de confianza cuenta el límite por IP real del cliente", async () => {
+    const limited = createApp(new MockAssetraClient(), { readsPerMinute: 1, writesPerMinute: 0, trustProxy: 1 });
+    const from = (ip: string) => request(limited).get("/api/assets").set("X-Forwarded-For", ip);
+    expect((await from("203.0.113.10")).status).toBe(200);
+    expect((await from("203.0.113.10")).status).toBe(429);
+    expect((await from("198.51.100.20")).status).toBe(200);
+  });
+
+  it("no limita el healthcheck", async () => {
+    const limited = createApp(new MockAssetraClient(), { readsPerMinute: 1, writesPerMinute: 0 });
+    for (let i = 0; i < 3; i++) expect((await request(limited).get("/health")).status).toBe(200);
+  });
+});
