@@ -1,97 +1,194 @@
 #![cfg(test)]
 
 use super::*;
-use rwa_registry::{AssetStatus, RwaRegistry, RwaRegistryClient};
-use soroban_sdk::{
-    testutils::Address as _, symbol_short, BytesN, Env, String,
-};
+use rwa_registry::{AssetStatus, NewAsset, RwaRegistry, RwaRegistryClient};
+use soroban_sdk::{testutils::Address as _, symbol_short, BytesN, Env, String};
 
-#[test]
-fn test_permissioned_transfer_flow() {
+// El registro despliega el token desde su WASM: compilar antes con
+// `cargo build --target wasm32v1-none --release -p rwa-token` (o `npm run test:contracts`).
+const TOKEN_WASM: &[u8] = include_bytes!("../../target/wasm32v1-none/release/rwa_token.wasm");
+const MAX_SUPPLY: i128 = 1_000;
+
+struct Setup<'a> {
+    env: Env,
+    registry: RwaRegistryClient<'a>,
+    token: PermissionedRwaTokenClient<'a>,
+    admin: Address,
+    issuer: Address,
+    compliance: Address,
+    wallet_a: Address,
+    wallet_b: Address,
+    asset_id: Symbol,
+}
+
+fn setup<'a>() -> Setup<'a> {
     let env = Env::default();
     env.mock_all_auths();
-
-    // 1. Desplegar RwaRegistry
-    let registry_id = env.register(RwaRegistry, ());
-    let registry_client = RwaRegistryClient::new(&env, &registry_id);
 
     let admin = Address::generate(&env);
     let issuer = Address::generate(&env);
     let compliance = Address::generate(&env);
     let wallet_a = Address::generate(&env);
     let wallet_b = Address::generate(&env);
-
     let asset_id = symbol_short!("FACT001");
-    let asset_type = symbol_short!("invoice");
-    let metadata_uri = String::from_str(&env, "https://assetra.io/factura-001.json");
-    let main_hash = BytesN::from_array(&env, &[7u8; 32]);
-    let due_date = 1800000000u64;
 
-    // Registrar activo (inicia en Draft) con su oficial de cumplimiento asignado
-    registry_client.create_asset(&asset_id, &issuer, &compliance, &asset_type, &metadata_uri, &main_hash, &due_date);
+    // 1. Desplegar RwaRegistry y aprobar al emisor
+    let wasm_hash = env.deployer().upload_contract_wasm(TOKEN_WASM);
+    let registry_id = env.register(RwaRegistry, (&admin, &wasm_hash));
+    let registry = RwaRegistryClient::new(&env, &registry_id);
+    registry.approve_issuer(&issuer);
 
-    // Autorizar al Emisor y a Wallet A en el registro
-    registry_client.authorize_wallet(&asset_id, &compliance, &issuer);
-    registry_client.authorize_wallet(&asset_id, &compliance, &wallet_a);
-    // Nota: Wallet B NO se autoriza deliberadamente (simula el rechazo de compliance)
-
-    // 2. Desplegar PermissionedRwaToken
-    let token_id = env.register(PermissionedRwaToken, ());
-    let token_client = PermissionedRwaTokenClient::new(&env, &token_id);
-
-    token_client.initialize(
-        &admin,
-        &registry_id,
+    // 2. El emisor registra el activo: se despliega su token (inicia en Draft)
+    let token_id = registry.create_asset(
         &asset_id,
-        &0u32,
-        &String::from_str(&env, "Factura Comercial 001"),
-        &String::from_str(&env, "FACT001"),
+        &issuer,
+        &compliance,
+        &NewAsset {
+            asset_type: symbol_short!("invoice"),
+            metadata_uri: String::from_str(&env, "https://assetra.io/factura-001.json"),
+            main_hash: BytesN::from_array(&env, &[7u8; 32]),
+            due_date: 1800000000u64,
+            name: String::from_str(&env, "Factura Comercial 001"),
+            symbol: String::from_str(&env, "FACT001"),
+            decimals: 0,
+            max_supply: MAX_SUPPLY,
+        },
     );
+    let token = PermissionedRwaTokenClient::new(&env, &token_id);
 
-    // 3. Control de Seguridad: No se puede emitir mientras el activo esté en Draft
-    let draft_mint = token_client.try_mint(&admin, &issuer, &1000i128);
-    assert_eq!(draft_mint, Err(Ok(TokenError::AssetNotActive)));
+    // Autorizar al Emisor y a Wallet A. Wallet B NO se autoriza deliberadamente.
+    registry.authorize_wallet(&asset_id, &compliance, &issuer);
+    registry.authorize_wallet(&asset_id, &compliance, &wallet_a);
 
-    // Activar activo en RwaRegistry
-    registry_client.set_asset_status(&asset_id, &issuer, &(AssetStatus::Active as u32));
+    Setup { env, registry, token, admin, issuer, compliance, wallet_a, wallet_b, asset_id }
+}
 
-    // 4. Control de Seguridad: Rechazar montos <= 0
-    let zero_mint = token_client.try_mint(&admin, &issuer, &0i128);
-    assert_eq!(zero_mint, Err(Ok(TokenError::InvalidAmount)));
+fn set_status(s: &Setup, status: AssetStatus) {
+    s.registry.set_asset_status(&s.asset_id, &s.issuer, &(status as u32));
+}
 
-    // 5. Mint exitoso de 1,000 tokens al emisor (Activo Active + Receptor autorizado)
-    token_client.mint(&admin, &issuer, &1000i128);
-    assert_eq!(token_client.balance(&issuer), 1000i128);
-    assert_eq!(token_client.total_supply(), 1000i128);
+#[test]
+fn test_token_metadata() {
+    let s = setup();
+    assert_eq!(s.token.max_supply(), MAX_SUPPLY);
+    assert_eq!(s.token.symbol(), String::from_str(&s.env, "FACT001"));
+    assert_eq!(s.token.asset_id(), s.asset_id);
+    assert_eq!(s.token.registry(), s.registry.address);
+    assert_eq!(s.token.decimals(), 0);
+}
+
+#[test]
+fn test_permissioned_transfer_flow() {
+    let s = setup();
+    let token = &s.token;
+
+    // 3. No se puede emitir mientras el activo esté en Draft
+    assert_eq!(token.try_mint(&s.issuer, &1000i128), Err(Ok(TokenError::AssetNotActive)));
+
+    set_status(&s, AssetStatus::Active);
+
+    // 4. Rechazar montos <= 0
+    assert_eq!(token.try_mint(&s.issuer, &0i128), Err(Ok(TokenError::InvalidAmount)));
+
+    // 5. Mint exitoso de 1,000 tokens al emisor
+    token.mint(&s.issuer, &1000i128);
+    assert_eq!(token.balance(&s.issuer), 1000i128);
+    assert_eq!(token.total_supply(), 1000i128);
 
     // 6. Transferencia válida hacia Wallet A (Autorizada)
-    token_client.transfer(&issuer, &wallet_a, &200i128);
-    assert_eq!(token_client.balance(&issuer), 800i128);
-    assert_eq!(token_client.balance(&wallet_a), 200i128);
+    token.transfer(&s.issuer, &s.wallet_a, &200i128);
+    assert_eq!(token.balance(&s.issuer), 800i128);
+    assert_eq!(token.balance(&s.wallet_a), 200i128);
 
-    // 7. Transferencia inválida hacia Wallet B (NO autorizada) -> Debe fallar con ReceiverNotAuthorized
-    let result = token_client.try_transfer(&issuer, &wallet_b, &100i128);
-    assert_eq!(result, Err(Ok(TokenError::ReceiverNotAuthorized)));
+    // 7. Transferencia hacia Wallet B (NO autorizada) -> ReceiverNotAuthorized, balances intactos
+    assert_eq!(token.try_transfer(&s.issuer, &s.wallet_b, &100i128), Err(Ok(TokenError::ReceiverNotAuthorized)));
+    assert_eq!(token.balance(&s.issuer), 800i128);
+    assert_eq!(token.balance(&s.wallet_b), 0i128);
 
-    // Verificar que los balances NO cambiaron tras el rechazo
-    assert_eq!(token_client.balance(&issuer), 800i128);
-    assert_eq!(token_client.balance(&wallet_b), 0i128);
+    // 8. Rechazar transferencias con monto negativo o cero
+    assert_eq!(token.try_transfer(&s.issuer, &s.wallet_a, &-10i128), Err(Ok(TokenError::InvalidAmount)));
 
-    // 8. Control de Seguridad: Rechazar transferencias con monto negativo o cero
-    let invalid_transfer = token_client.try_transfer(&issuer, &wallet_a, &-10i128);
-    assert_eq!(invalid_transfer, Err(Ok(TokenError::InvalidAmount)));
+    // 9. Pausa de emergencia (estado Paused en el registro)
+    set_status(&s, AssetStatus::Paused);
+    assert_eq!(token.try_transfer(&s.issuer, &s.wallet_a, &50i128), Err(Ok(TokenError::AssetPaused)));
+    assert_eq!(token.try_mint(&s.issuer, &1i128), Err(Ok(TokenError::AssetPaused)));
+    assert_eq!(token.try_burn(&s.issuer, &1i128), Err(Ok(TokenError::AssetPaused)));
+    set_status(&s, AssetStatus::Active);
+    token.transfer(&s.issuer, &s.wallet_a, &50i128);
+    assert_eq!(token.balance(&s.wallet_a), 250i128);
 
-    // 9. Prueba de Pausa de Emergencia
-    token_client.pause(&admin);
-    let pause_result = token_client.try_transfer(&issuer, &wallet_a, &50i128);
-    assert_eq!(pause_result, Err(Ok(TokenError::AssetPaused)));
+    // 10. Redención: el activo pasa a Redeemed y los titulares queman sus tokens
+    set_status(&s, AssetStatus::Redeemed);
+    assert_eq!(token.try_transfer(&s.issuer, &s.wallet_a, &1i128), Err(Ok(TokenError::AssetNotActive)));
+    token.burn(&s.issuer, &750i128);
+    token.burn(&s.wallet_a, &250i128);
+    assert_eq!(token.total_supply(), 0i128);
+}
 
-    token_client.unpause(&admin);
-    token_client.transfer(&issuer, &wallet_a, &50i128);
-    assert_eq!(token_client.balance(&wallet_a), 250i128);
+#[test]
+fn test_mint_is_signed_by_registered_issuer() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+    s.token.mint(&s.issuer, &1i128);
+    let auths = s.env.auths();
+    assert_eq!(auths.len(), 1);
+    assert_eq!(auths[0].0, s.issuer);
+}
 
-    // 10. Prueba de Redención / Burn
-    token_client.burn(&issuer, &750i128);
-    assert_eq!(token_client.balance(&issuer), 0i128);
-    assert_eq!(token_client.total_supply(), 250i128);
+#[test]
+fn test_revoked_issuer_cannot_mint() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+    s.registry.revoke_issuer(&s.issuer);
+    assert_eq!(s.token.try_mint(&s.issuer, &1i128), Err(Ok(TokenError::IssuerNotApproved)));
+
+    s.registry.approve_issuer(&s.issuer);
+    s.token.mint(&s.issuer, &1i128);
+}
+
+#[test]
+fn test_mint_respects_max_supply() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+
+    s.token.mint(&s.issuer, &(MAX_SUPPLY - 1));
+    assert_eq!(s.token.try_mint(&s.issuer, &2i128), Err(Ok(TokenError::MaxSupplyExceeded)));
+    s.token.mint(&s.issuer, &1i128);
+    assert_eq!(s.token.total_supply(), MAX_SUPPLY);
+
+    // Quemar libera cupo
+    s.token.burn(&s.issuer, &10i128);
+    s.token.mint(&s.issuer, &10i128);
+}
+
+#[test]
+fn test_frozen_wallet_cannot_send_receive_or_burn() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+    s.token.mint(&s.wallet_a, &100i128);
+    s.registry.freeze_wallet(&s.asset_id, &s.compliance, &s.wallet_a);
+
+    assert_eq!(s.token.try_transfer(&s.wallet_a, &s.issuer, &10i128), Err(Ok(TokenError::WalletFrozen)));
+    assert_eq!(s.token.try_transfer(&s.issuer, &s.wallet_a, &10i128), Err(Ok(TokenError::WalletFrozen)));
+    assert_eq!(s.token.try_burn(&s.wallet_a, &10i128), Err(Ok(TokenError::WalletFrozen)));
+    assert_eq!(s.token.try_mint(&s.wallet_a, &10i128), Err(Ok(TokenError::WalletFrozen)));
+    assert_eq!(s.token.balance(&s.wallet_a), 100i128);
+}
+
+#[test]
+fn test_revoked_sender_rejected() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+    s.token.mint(&s.wallet_a, &100i128);
+    s.registry.revoke_wallet(&s.asset_id, &s.compliance, &s.wallet_a);
+    assert_eq!(s.token.try_transfer(&s.wallet_a, &s.issuer, &10i128), Err(Ok(TokenError::SenderNotAuthorized)));
+}
+
+#[test]
+fn test_platform_admin_emergency_pause() {
+    let s = setup();
+    set_status(&s, AssetStatus::Active);
+    s.token.mint(&s.issuer, &10i128);
+    s.registry.set_asset_status(&s.asset_id, &s.admin, &(AssetStatus::Paused as u32));
+    assert_eq!(s.token.try_transfer(&s.issuer, &s.wallet_a, &1i128), Err(Ok(TokenError::AssetPaused)));
 }

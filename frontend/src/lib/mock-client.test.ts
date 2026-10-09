@@ -22,7 +22,7 @@ describe("MockAssetraClient", () => {
     const client = new MockAssetraClient();
     const result = await client.transferTokens("asset-invoice-091", {
       from: "Andina Export SRL",
-      to: "GCRVRGTER4FV3VPIO6C4TIG63OZNXMOCQCZR5LUBFB4OUB53FBOKBGLO", // Aya Capital
+      to: "GAYP4UFK4UFAGCEX3H53AGXDTQPMTLB5XMKTPWOSVTCJO5XYQZDEGT7F", // Aya Capital
       amount: 40
     });
     expect(result.status).toBe("success");

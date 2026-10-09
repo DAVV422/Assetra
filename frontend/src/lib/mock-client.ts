@@ -124,6 +124,13 @@ export class MockAssetraClient implements AssetraClient {
       asset.mintedSupply -= amount;
     }
 
+    if (input.action === "activate") {
+      if (asset.status !== "draft") {
+        throw new Error("InvalidStatusTransition: Solo un activo en borrador puede activarse");
+      }
+      asset.status = "active";
+    }
+
     if (input.action === "pause") {
       if (asset.status !== "active") {
         throw new Error("Solo activos en estado Activo pueden ser pausados");
@@ -147,6 +154,7 @@ export class MockAssetraClient implements AssetraClient {
     }
 
     const actionLabels: Record<string, string> = {
+      activate: "Activo activado por el emisor",
       mint: `Emisión de ${amount} ${asset.symbol}`,
       burn: `Quema de ${amount} ${asset.symbol}`,
       pause: "Activo pausado por el emisor",

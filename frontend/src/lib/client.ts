@@ -1,3 +1,4 @@
+import { ChainAssetraClient } from "./chain-client";
 import { HttpAssetraClient } from "./http-client";
 import { MockAssetraClient } from "./mock-client";
 import type { AssetraClient } from "./assetra-client";
@@ -20,11 +21,25 @@ let currentMode: ClientMode = stored || envDefault;
 
 export const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
+// Wallet conectada: en modo on-chain es quien firma cada transacción
+let activeWallet: string | null = typeof window !== "undefined" ? localStorage.getItem("assetra_connected_wallet") : null;
+export function setActiveWallet(wallet: string | null): void {
+  activeWallet = wallet;
+}
+
+// Si el backend corre en modo live, el modo "http" opera on-chain firmando con Freighter
+let backendLive = false;
+export function isOnChainMode(): boolean {
+  return currentMode === "http" && backendLive;
+}
+
 const mockInstance = new MockAssetraClient();
 const httpInstance = new HttpAssetraClient(apiUrl);
+const chainInstance = new ChainAssetraClient(apiUrl, () => activeWallet);
 
 function getActiveClient(): AssetraClient {
-  return currentMode === "http" ? httpInstance : mockInstance;
+  if (currentMode === "mock") return mockInstance;
+  return backendLive ? chainInstance : httpInstance;
 }
 
 export const assetraClient: AssetraClient = {
@@ -70,6 +85,7 @@ export async function checkBackendHealth(): Promise<{ ok: boolean; mode?: string
     const res = await fetch(`${apiUrl}/health`);
     if (!res.ok) return { ok: false };
     const data = await res.json();
+    backendLive = data.mode === "live";
     return { ok: true, mode: data.mode };
   } catch {
     return { ok: false };

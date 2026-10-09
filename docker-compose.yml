@@ -6,21 +6,27 @@ services:
     container_name: assetra-backend
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      # Solo en localhost: la API no tiene autenticación, no la expongas a la red
+      - "127.0.0.1:4000:4000"
+    # Los IDs de contrato se leen de contracts.json (copiado en la imagen).
+    # El backend no necesita claves: los usuarios firman con su wallet (Freighter).
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
       - PORT=4000
-      - CORS_ORIGIN=http://localhost:5173,http://127.0.0.1:5173
-      - ASSETRA_MODE=live
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+      - ASSETRA_MODE=${ASSETRA_MODE:-live}
       - STELLAR_NETWORK=testnet
       - STELLAR_RPC_URL=https://soroban-testnet.stellar.org
       - STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-      - RWA_REGISTRY_CONTRACT_ID=CAC57CATCF5DZYLRW6XEZ4DP367V25D24KO6V37U4EEQWJO3CTVV7N5F
-      - PERMISSIONED_TOKEN_CONTRACT_ID=CBACUWCFDNO7BU7UCI7G4U45Y5WDNXCAGVI4AFQO5ZBMBHMRFC67GLKG
     volumes:
       # Persistencia de activos creados y borradores en disco
       - ./backend/data:/app/data
-      # (Opcional en entornos Linux/WSL) Montar claves locales de Stellar CLI del host:
-      # - ~/.config/stellar:/root/.config/stellar:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
       interval: 15s

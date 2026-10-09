@@ -9,3 +9,15 @@ coverage/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+
+# Datos de ejecución del backend (pueden contener información de activos/participantes)
+backend/data/*
+!backend/data/.gitkeep
+
+# Claves e identidades: nunca versionar
+*.toml.key
+**/identity/*.toml
+*.pem
+
+# Borradores locales
+scratch/

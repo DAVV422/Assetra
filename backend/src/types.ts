@@ -46,7 +46,11 @@ export interface Asset {
   holderCount: number;
   maturityDate: string;
   status: AssetStatus;
+  /** Dirección del token del activo (desplegado por RwaRegistry) */
   contractId?: string;
+  /** asset_id del activo en RwaRegistry (Symbol) */
+  onChainId?: string;
+  complianceOfficer?: string;
   creatorWallet?: string;
   documents: DocumentRecord[];
   participants: Participant[];
@@ -67,15 +71,19 @@ export interface CreateAssetInput {
   currency: string;
   supply: number;
   maturityDate: string;
+  /** Modo live: asset_id on-chain y hash de la transacción create_asset firmada por el emisor */
+  onChainId?: string;
+  txHash?: string;
 }
 
-export type LifecycleAction = "mint" | "burn" | "pause" | "unpause" | "redeem";
-export interface LifecycleActionInput { action: LifecycleAction; amount?: number; }
+export type LifecycleAction = "activate" | "mint" | "burn" | "pause" | "unpause" | "redeem";
+export interface LifecycleActionInput { action: LifecycleAction; amount?: number; txHash?: string; }
 
 export interface TransferInput {
   from: string;
   to: string;
   amount: number;
+  txHash?: string;
 }
 
 export interface TransferResult {
