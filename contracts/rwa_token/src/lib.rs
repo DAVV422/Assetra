@@ -1,7 +1,12 @@
 #![no_std]
 
+//! Token permisionado de un activo RWA. Lo despliega `RwaRegistry` al registrar el activo.
+//! No tiene administrador propio: los roles (emisor, compliance) y el estado del activo se
+//! leen siempre del registro, que es la única fuente de verdad de permisos.
+
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    BytesN, Env, String, Symbol,
 };
 
 #[contracterror]
@@ -14,23 +19,114 @@ pub enum TokenError {
     AssetPaused = 4,
     InsufficientBalance = 5,
     AssetNotActive = 6,
-    AlreadyInitialized = 7,
     NotInitialized = 8,
     InvalidAmount = 9,
+    MaxSupplyExceeded = 10,
+    IssuerNotApproved = 11,
 }
 
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    Admin,
     Registry,
     AssetId,
     Decimals,
     Name,
     Symbol,
     TotalSupply,
+    MaxSupply,
     Balance(Address),
-    IsPaused,
+}
+
+// Valores espejo de `rwa_registry`. Se declaran aquí (en lugar de depender del crate)
+// para que el WASM del token no incluya ni exporte las funciones del registro.
+const ASSET_ACTIVE: u32 = 1;
+const ASSET_PAUSED: u32 = 2;
+const ASSET_REDEEMED: u32 = 3;
+const WALLET_AUTHORIZED: u32 = 1;
+const WALLET_FROZEN: u32 = 3;
+
+/// Copia espejo de `rwa_registry::AssetData` (debe coincidir campo a campo).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetData {
+    pub issuer: Address,
+    pub compliance_officer: Address,
+    pub token: Address,
+    pub asset_type: Symbol,
+    pub metadata_uri: String,
+    pub main_hash: BytesN<32>,
+    pub due_date: u64,
+    pub status: u32,
+}
+
+#[allow(dead_code)]
+#[contractclient(name = "RegistryClient")]
+trait RegistryInterface {
+    fn get_asset(e: Env, asset_id: Symbol) -> AssetData;
+    fn wallet_status(e: Env, asset_id: Symbol, wallet: Address) -> u32;
+    fn is_approved_issuer(e: Env, issuer: Address) -> bool;
+}
+
+const DAY_IN_LEDGERS: u32 = 17_280;
+const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
+const TTL_EXTEND_TO: u32 = 60 * DAY_IN_LEDGERS;
+
+fn bump_instance(e: &Env) {
+    e.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+fn read_balance(e: &Env, id: &Address) -> i128 {
+    let key = DataKey::Balance(id.clone());
+    match e.storage().persistent().get::<_, i128>(&key) {
+        Some(balance) => {
+            e.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            balance
+        }
+        None => 0,
+    }
+}
+
+fn write_balance(e: &Env, id: &Address, amount: i128) {
+    let key = DataKey::Balance(id.clone());
+    e.storage().persistent().set(&key, &amount);
+    e.storage().persistent().extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+fn registry(e: &Env) -> Result<(RegistryClient<'_>, Symbol), TokenError> {
+    let registry_addr: Address = e
+        .storage()
+        .instance()
+        .get(&DataKey::Registry)
+        .ok_or(TokenError::NotInitialized)?;
+    let asset_id: Symbol = e
+        .storage()
+        .instance()
+        .get(&DataKey::AssetId)
+        .ok_or(TokenError::NotInitialized)?;
+    Ok((RegistryClient::new(e, &registry_addr), asset_id))
+}
+
+fn require_active(asset: &AssetData) -> Result<(), TokenError> {
+    match asset.status {
+        ASSET_ACTIVE => Ok(()),
+        ASSET_PAUSED => Err(TokenError::AssetPaused),
+        _ => Err(TokenError::AssetNotActive),
+    }
+}
+
+/// Valida el estado de compliance de una wallet; `not_authorized` es el error si no está autorizada.
+fn require_wallet(
+    registry: &RegistryClient,
+    asset_id: &Symbol,
+    wallet: &Address,
+    not_authorized: TokenError,
+) -> Result<(), TokenError> {
+    match registry.wallet_status(asset_id, wallet) {
+        WALLET_AUTHORIZED => Ok(()),
+        WALLET_FROZEN => Err(TokenError::WalletFrozen),
+        _ => Err(not_authorized),
+    }
 }
 
 #[contract]
@@ -38,86 +134,63 @@ pub struct PermissionedRwaToken;
 
 #[contractimpl]
 impl PermissionedRwaToken {
-    pub fn initialize(
+    /// Lo invoca `RwaRegistry::create_asset` en la misma transacción del despliegue.
+    pub fn __constructor(
         e: Env,
-        admin: Address,
         registry: Address,
         asset_id: Symbol,
         decimals: u32,
         name: String,
         symbol: String,
-    ) -> Result<(), TokenError> {
-        if e.storage().instance().has(&DataKey::Admin) {
-            return Err(TokenError::AlreadyInitialized);
+        max_supply: i128,
+    ) {
+        if max_supply <= 0 {
+            panic_with_error!(&e, TokenError::InvalidAmount);
         }
 
-        e.storage().instance().set(&DataKey::Admin, &admin);
         e.storage().instance().set(&DataKey::Registry, &registry);
         e.storage().instance().set(&DataKey::AssetId, &asset_id);
         e.storage().instance().set(&DataKey::Decimals, &decimals);
         e.storage().instance().set(&DataKey::Name, &name);
         e.storage().instance().set(&DataKey::Symbol, &symbol);
         e.storage().instance().set(&DataKey::TotalSupply, &0i128);
-        e.storage().instance().set(&DataKey::IsPaused, &false);
-
-        Ok(())
+        e.storage().instance().set(&DataKey::MaxSupply, &max_supply);
+        bump_instance(&e);
     }
 
-    pub fn mint(e: Env, admin: Address, to: Address, amount: i128) -> Result<(), TokenError> {
-        admin.require_auth();
-
+    /// Emite tokens. Firma el emisor del activo registrado en `RwaRegistry`, que debe seguir aprobado.
+    pub fn mint(e: Env, to: Address, amount: i128) -> Result<(), TokenError> {
         // Control de Seguridad 1: Monto positivo
         if amount <= 0 {
             return Err(TokenError::InvalidAmount);
         }
+        bump_instance(&e);
 
-        let stored_admin: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(TokenError::NotInitialized)?;
+        let (registry, asset_id) = registry(&e)?;
+        let asset = registry.get_asset(&asset_id);
 
-        if admin != stored_admin {
-            return Err(TokenError::SenderNotAuthorized);
+        // Control de Seguridad 2: Solo el emisor del activo, y mientras siga aprobado por la plataforma
+        asset.issuer.require_auth();
+        if !registry.is_approved_issuer(&asset.issuer) {
+            return Err(TokenError::IssuerNotApproved);
         }
 
-        let is_paused: bool = e.storage().instance().get(&DataKey::IsPaused).unwrap_or(false);
-        if is_paused {
-            return Err(TokenError::AssetPaused);
-        }
+        // Control de Seguridad 3: El activo debe estar en estado Active
+        require_active(&asset)?;
 
-        let registry_addr: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Registry)
-            .ok_or(TokenError::NotInitialized)?;
-        let asset_id: Symbol = e
-            .storage()
-            .instance()
-            .get(&DataKey::AssetId)
-            .ok_or(TokenError::NotInitialized)?;
+        // Control de Seguridad 4: El receptor debe estar en la whitelist
+        require_wallet(&registry, &asset_id, &to, TokenError::ReceiverNotAuthorized)?;
 
-        let registry_client = rwa_registry::RwaRegistryClient::new(&e, &registry_addr);
-
-        // Control de Seguridad 2: El activo debe estar en estado Active (1) en RwaRegistry
-        let asset = registry_client.get_asset(&asset_id);
-        if asset.status != (rwa_registry::AssetStatus::Active as u32) {
-            return Err(TokenError::AssetNotActive);
-        }
-
-        // Control de Seguridad 3: El receptor debe estar en la whitelist
-        if !registry_client.is_authorized(&asset_id, &to) {
-            return Err(TokenError::ReceiverNotAuthorized);
-        }
-
-        // Actualizar balance
-        let balance_key = DataKey::Balance(to.clone());
-        let current_balance: i128 = e.storage().persistent().get(&balance_key).unwrap_or(0);
-        e.storage().persistent().set(&balance_key, &(current_balance + amount));
-
-        // Actualizar total supply
+        // Control de Seguridad 5: No superar el suministro máximo
         let total_supply: i128 = e.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
-        e.storage().instance().set(&DataKey::TotalSupply, &(total_supply + amount));
+        let max_supply: i128 = e.storage().instance().get(&DataKey::MaxSupply).ok_or(TokenError::NotInitialized)?;
+        let new_supply = total_supply.checked_add(amount).ok_or(TokenError::MaxSupplyExceeded)?;
+        if new_supply > max_supply {
+            return Err(TokenError::MaxSupplyExceeded);
+        }
+
+        write_balance(&e, &to, read_balance(&e, &to) + amount);
+        e.storage().instance().set(&DataKey::TotalSupply, &new_supply);
 
         e.events().publish((symbol_short!("mint"), to), amount);
 
@@ -131,72 +204,55 @@ impl PermissionedRwaToken {
         if amount <= 0 {
             return Err(TokenError::InvalidAmount);
         }
+        bump_instance(&e);
 
-        let is_paused: bool = e.storage().instance().get(&DataKey::IsPaused).unwrap_or(false);
-        if is_paused {
-            return Err(TokenError::AssetPaused);
-        }
-
-        let registry_addr: Address = e
-            .storage()
-            .instance()
-            .get(&DataKey::Registry)
-            .ok_or(TokenError::NotInitialized)?;
-        let asset_id: Symbol = e
-            .storage()
-            .instance()
-            .get(&DataKey::AssetId)
-            .ok_or(TokenError::NotInitialized)?;
-
-        let registry_client = rwa_registry::RwaRegistryClient::new(&e, &registry_addr);
-
-        // Control de Seguridad 2: El activo debe estar en estado Active (1) en RwaRegistry
-        let asset = registry_client.get_asset(&asset_id);
-        if asset.status != (rwa_registry::AssetStatus::Active as u32) {
-            return Err(TokenError::AssetNotActive);
-        }
+        // Control de Seguridad 2: El activo debe estar en estado Active (Paused bloquea)
+        let (registry, asset_id) = registry(&e)?;
+        require_active(&registry.get_asset(&asset_id))?;
 
         // Control de Seguridad 3: Validación estricta de Compliance (Emisor y Receptor)
-        if !registry_client.is_authorized(&asset_id, &from) {
-            return Err(TokenError::SenderNotAuthorized);
-        }
-
-        if !registry_client.is_authorized(&asset_id, &to) {
-            return Err(TokenError::ReceiverNotAuthorized);
-        }
+        require_wallet(&registry, &asset_id, &from, TokenError::SenderNotAuthorized)?;
+        require_wallet(&registry, &asset_id, &to, TokenError::ReceiverNotAuthorized)?;
 
         // Control de Seguridad 4: Validar saldo suficiente
-        let from_key = DataKey::Balance(from.clone());
-        let from_balance: i128 = e.storage().persistent().get(&from_key).unwrap_or(0);
+        let from_balance = read_balance(&e, &from);
         if from_balance < amount {
             return Err(TokenError::InsufficientBalance);
         }
 
-        let to_key = DataKey::Balance(to.clone());
-        let to_balance: i128 = e.storage().persistent().get(&to_key).unwrap_or(0);
-
-        e.storage().persistent().set(&from_key, &(from_balance - amount));
-        e.storage().persistent().set(&to_key, &(to_balance + amount));
+        write_balance(&e, &from, from_balance - amount);
+        write_balance(&e, &to, read_balance(&e, &to) + amount);
 
         e.events().publish((symbol_short!("transfer"), from, to), amount);
 
         Ok(())
     }
 
+    /// Quema tokens del titular (redención). Permitido con el activo Active o Redeemed;
+    /// bloqueado si está en Draft/Paused o si la wallet está congelada.
     pub fn burn(e: Env, from: Address, amount: i128) -> Result<(), TokenError> {
         from.require_auth();
 
         if amount <= 0 {
             return Err(TokenError::InvalidAmount);
         }
+        bump_instance(&e);
 
-        let from_key = DataKey::Balance(from.clone());
-        let from_balance: i128 = e.storage().persistent().get(&from_key).unwrap_or(0);
+        let (registry, asset_id) = registry(&e)?;
+        let asset = registry.get_asset(&asset_id);
+        if asset.status != ASSET_REDEEMED {
+            require_active(&asset)?;
+        }
+        if registry.wallet_status(&asset_id, &from) == WALLET_FROZEN {
+            return Err(TokenError::WalletFrozen);
+        }
+
+        let from_balance = read_balance(&e, &from);
         if from_balance < amount {
             return Err(TokenError::InsufficientBalance);
         }
 
-        e.storage().persistent().set(&from_key, &(from_balance - amount));
+        write_balance(&e, &from, from_balance - amount);
 
         let total_supply: i128 = e.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
         e.storage().instance().set(&DataKey::TotalSupply, &(total_supply - amount));
@@ -206,26 +262,36 @@ impl PermissionedRwaToken {
         Ok(())
     }
 
-    pub fn pause(e: Env, admin: Address) -> Result<(), TokenError> {
-        admin.require_auth();
-        e.storage().instance().set(&DataKey::IsPaused, &true);
-        e.events().publish((symbol_short!("paused"), admin), true);
-        Ok(())
-    }
-
-    pub fn unpause(e: Env, admin: Address) -> Result<(), TokenError> {
-        admin.require_auth();
-        e.storage().instance().set(&DataKey::IsPaused, &false);
-        e.events().publish((symbol_short!("unpaused"), admin), false);
-        Ok(())
-    }
-
     pub fn balance(e: Env, id: Address) -> i128 {
-        e.storage().persistent().get(&DataKey::Balance(id)).unwrap_or(0)
+        read_balance(&e, &id)
     }
 
     pub fn total_supply(e: Env) -> i128 {
         e.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0)
+    }
+
+    pub fn max_supply(e: Env) -> i128 {
+        e.storage().instance().get(&DataKey::MaxSupply).unwrap_or(0)
+    }
+
+    pub fn decimals(e: Env) -> u32 {
+        e.storage().instance().get(&DataKey::Decimals).unwrap_or(0)
+    }
+
+    pub fn name(e: Env) -> String {
+        e.storage().instance().get(&DataKey::Name).unwrap()
+    }
+
+    pub fn symbol(e: Env) -> String {
+        e.storage().instance().get(&DataKey::Symbol).unwrap()
+    }
+
+    pub fn asset_id(e: Env) -> Symbol {
+        e.storage().instance().get(&DataKey::AssetId).unwrap()
+    }
+
+    pub fn registry(e: Env) -> Address {
+        e.storage().instance().get(&DataKey::Registry).unwrap()
     }
 }
 
