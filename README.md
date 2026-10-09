@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./frontend/src/assetra-logo.png" alt="Assetra" width="720" />
+</p>
+
 # Assetra — Infraestructura RWA sobre Stellar
 
 > Infraestructura modular para registrar, emitir y administrar activos del mundo real (RWA) con reglas de cumplimiento verificables on-chain sobre **Stellar Testnet** (Soroban).
