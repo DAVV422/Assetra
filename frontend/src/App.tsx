@@ -371,7 +371,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => navigate("dashboard")}><Mark /><span className="brand-words">TOKENIZAR<br />VERIFICAR<br />MOVER</span></button>
+        <button className="brand" onClick={() => navigate("dashboard")}><Mark /></button>
         <nav className={menuOpen ? "main-nav open" : "main-nav"}>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => navigate("dashboard")}>RESUMEN</button>
           <button className={view === "assets" ? "active" : ""} onClick={() => navigate("assets")}>ACTIVOS</button>
