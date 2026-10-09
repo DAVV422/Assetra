@@ -11,7 +11,7 @@ import {
 } from "@stellar/freighter-api";
 import { OrbitalLines } from "./components/OrbitalLines";
 import assetraLogo from "./assetra-logo.png";
-import { apiUrl, assetraClient, checkBackendHealth, getClientMode, setClientMode, type ClientMode } from "./lib/client";
+import { apiUrl, assetraClient, checkBackendHealth, getClientMode, isOnChainMode, setActiveWallet, setClientMode, type ClientMode } from "./lib/client";
 import { cacheCustomAssetLocally, getCachedCustomAssets } from "./lib/http-client";
 import type {
   Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus, TransferResult
@@ -93,6 +93,9 @@ function EmptyState({ title, copy }: { title: string; copy: string }) {
   return <div className="empty-state"><Blocks size={30} /><h3>{title}</h3><p>{copy}</p></div>;
 }
 
+// Wallet ficticia solo para el modo simulación (no existe on-chain)
+const DEMO_WALLET = "GDEMOWALLETASSETRASIMULACIONSINFIRMAREALXXXXXXXXXXXXXXXX";
+
 const getMyCreatedAssetIds = (): string[] => {
   if (typeof window === "undefined" || !window.localStorage) return [];
   try {
@@ -163,14 +166,8 @@ export default function App() {
     const w = userWallet.trim().toLowerCase();
     if (asset.creatorWallet && asset.creatorWallet.toLowerCase() === w) return true;
     if (asset.issuer.toLowerCase() === w) return true;
+    if (asset.complianceOfficer && asset.complianceOfficer.toLowerCase() === w) return true;
     if (asset.participants && asset.participants.some((p) => p.wallet.toLowerCase() === w)) return true;
-
-    // Cuentas conocidas de prueba para demo en Testnet:
-    if (w.startsWith("gdkm") && (asset.id.includes("invoice") || asset.issuer.toLowerCase().includes("andina"))) return true;
-    if (w.startsWith("gcrv") && asset.participants?.some((p) => p.wallet.toLowerCase().startsWith("gcrv"))) return true;
-    if (w.startsWith("gayk") && asset.participants?.some((p) => p.wallet.toLowerCase().startsWith("gayk"))) return true;
-    if (w.startsWith("gb72")) return true;
-
     return false;
   };
 
@@ -191,12 +188,12 @@ export default function App() {
   }, [displayedAssets, selectedId, assets]);
 
   useEffect(() => {
+    // Se espera al health check: define si el modo API opera on-chain (backend live) o simulado
     checkBackendHealth().then((res) => {
       if (res.ok && clientMode === "http") {
-        setToast("Conectado a Live API en http://localhost:4000");
+        setToast(res.mode === "live" ? `Modo on-chain: firmas con Freighter (API ${apiUrl})` : `Conectado a API mock en ${apiUrl}`);
       }
-    });
-    assetraClient.listAssets()
+    }).then(() => assetraClient.listAssets())
       .then((data) => {
         setAssets(data);
         if (data[0] && !data.some((item) => item.id === selectedId)) {
@@ -263,6 +260,7 @@ export default function App() {
 
   const updateWallet = (newWallet: string | null) => {
     setWallet(newWallet);
+    setActiveWallet(newWallet);
     if (typeof window !== "undefined") {
       if (newWallet) {
         localStorage.setItem("assetra_connected_wallet", newWallet);
@@ -286,6 +284,16 @@ export default function App() {
     }
   };
 
+  // Sin Freighter solo se puede simular: en modo on-chain cada operación requiere la firma real
+  const useDemoWallet = () => {
+    if (isOnChainMode()) {
+      setError("No se detectó Freighter. Instala la extensión y selecciona la red Testnet para firmar operaciones on-chain.");
+      return;
+    }
+    updateWallet(DEMO_WALLET);
+    setToast("Freighter no detectado: conectada wallet demo (modo simulación)");
+  };
+
   const connectFreighter = async () => {
     setWalletConnecting(true);
     try {
@@ -307,13 +315,9 @@ export default function App() {
           return;
         }
       }
-      const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
-      updateWallet(demoWallet);
-      setToast("Freighter no detectado: conectada wallet demo Testnet (GB72...BOI4)");
+      useDemoWallet();
     } catch {
-      const demoWallet = "GB72W3C6VBQ7OU3VRJLDATVKXDSF6OUNS2NXZPIZ22BYUDZBXLBMBOI4";
-      updateWallet(demoWallet);
-      setToast("Modo Testnet: conectada wallet demo (GB72...BOI4)");
+      useDemoWallet();
     } finally {
       setWalletConnecting(false);
     }
@@ -614,6 +618,7 @@ function AssetDetail({
   const [transferBusy, setTransferBusy] = useState(false);
   const [transferResult, setTransferResult] = useState<TransferResult | null>(null);
   const [transferError, setTransferError] = useState<string | null>(null);
+  const onChain = isOnChainMode();
 
   useEffect(() => {
     if (connectedWallet) {
@@ -628,7 +633,7 @@ function AssetDetail({
     setTransferError(null);
     try {
       const res = await assetraClient.transferTokens(asset.id, {
-        from: transferFrom.trim(),
+        from: (onChain ? connectedWallet ?? "" : transferFrom).trim(),
         to: transferTo.trim(),
         amount: Number(transferAmount)
       });
@@ -667,7 +672,9 @@ function AssetDetail({
         <div className="action-block">
           <h3><Activity size={20} /> Controles administrativos</h3>
           <label><span>CANTIDAD</span><input type="number" min="1" value={amount || ""} onChange={(event) => setAmount(Number(event.target.value))} /></label>
+          {onChain && <p className="transfer-subtitle">Cada acción se firma con tu wallet. Mint, estado y documentos los firma el emisor del activo.</p>}
           <div className="action-grid">
+            {asset.status === "draft" && <button disabled={busy} onClick={() => onAction("activate")}><Play /> Activar</button>}
             <button disabled={busy || asset.status === "redeemed"} onClick={() => onAction("mint", amount)}><Plus /> Mint</button>
             <button disabled={busy || !asset.mintedSupply} onClick={() => onAction("burn", amount)}><Ban /> Burn</button>
             {asset.status === "paused"
@@ -692,9 +699,10 @@ function AssetDetail({
               <input
                 required
                 className="mono"
-                value={transferFrom}
+                value={onChain ? connectedWallet ?? "" : transferFrom}
+                readOnly={onChain}
                 onChange={(e) => setTransferFrom(e.target.value)}
-                placeholder="Dirección Stellar G... o Emisor"
+                placeholder={onChain ? "Conecta Freighter para firmar" : "Dirección Stellar G... o Emisor"}
               />
             </label>
 
@@ -723,14 +731,16 @@ function AssetDetail({
                     <span>{p.name.split(" ")[0]} ({participantLabels[p.status]})</span>
                   </button>
                 ))}
-                <button
-                  type="button"
-                  className="transfer-pill-btn pill-revoked"
-                  onClick={() => setTransferTo("GDESCONOCIDA999NOAUTORIZADAXASSETRA")}
-                  title="Probar wallet no autorizada"
-                >
-                  <ShieldAlert size={11} /> Wallet No Registrada
-                </button>
+                {!onChain && (
+                  <button
+                    type="button"
+                    className="transfer-pill-btn pill-revoked"
+                    onClick={() => setTransferTo("GDESCONOCIDA999NOAUTORIZADAXASSETRA")}
+                    title="Probar wallet no autorizada"
+                  >
+                    <ShieldAlert size={11} /> Wallet No Registrada
+                  </button>
+                )}
               </div>
             </label>
 
@@ -805,6 +815,8 @@ function AssetDetail({
                   ? "ERROR: AssetNotActive"
                   : transferError.includes("AssetPaused")
                   ? "ERROR: AssetPaused"
+                  : transferError.includes("Freighter")
+                  ? "FIRMA CANCELADA"
                   : "ERROR: ComplianceRuleViolation"}
               </span>
             </div>
@@ -847,15 +859,23 @@ function ParticipantsView({ assets, selected, onSelect, onChanged, onToast }: {
 }) {
   const [form, setForm] = useState({ name: "", wallet: "", jurisdiction: "Bolivia" });
   const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const onChain = isOnChainMode();
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true);
+    event.preventDefault(); setBusy(true); setFormError(null);
     try {
       await assetraClient.addParticipant(selected.id, { ...form, status: "pending" });
-      await onChanged(); setForm({ name: "", wallet: "", jurisdiction: "Bolivia" }); onToast("Participante registrado como pendiente");
+      await onChanged(); setForm({ name: "", wallet: "", jurisdiction: "Bolivia" });
+      onToast(onChain ? "Participante autorizado on-chain por Compliance" : "Participante registrado como pendiente");
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "No fue posible registrar el participante");
     } finally { setBusy(false); }
   };
   const changeStatus = async (participantId: string, status: ParticipantStatus) => {
-    setBusy(true); try { await assetraClient.updateParticipantStatus(selected.id, participantId, status); await onChanged(); onToast(`Estado actualizado: ${participantLabels[status]}`); } finally { setBusy(false); }
+    setBusy(true); setFormError(null);
+    try { await assetraClient.updateParticipantStatus(selected.id, participantId, status); await onChanged(); onToast(`Estado actualizado: ${participantLabels[status]}`); }
+    catch (reason) { setFormError(reason instanceof Error ? reason.message : "No fue posible actualizar el estado"); }
+    finally { setBusy(false); }
   };
   return (
     <section className="page-section">
@@ -899,11 +919,15 @@ function ParticipantsView({ assets, selected, onSelect, onChanged, onToast }: {
           </div> : <EmptyState title="Sin participantes" copy="Registra la primera wallet autorizada." />}
         </div>
         <form className="side-form" onSubmit={submit}>
-          <div className="form-icon"><UserPlus /></div><h2>Nuevo participante</h2><p>Los datos son simulados. La información personal nunca se almacena on-chain.</p>
+          <div className="form-icon"><UserPlus /></div><h2>Nuevo participante</h2>
+          <p>{onChain
+            ? "Registrar un participante lo autoriza en la whitelist on-chain: lo firma el oficial de compliance del activo. Nombre y jurisdicción nunca se almacenan on-chain."
+            : "Los datos son simulados. La información personal nunca se almacena on-chain."}</p>
           <label><span>NOMBRE O ENTIDAD</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ej. Aya Capital" /></label>
           <label><span>WALLET STELLAR</span><input required minLength={8} value={form.wallet} onChange={(event) => setForm({ ...form, wallet: event.target.value })} placeholder="G..." /></label>
           <label><span>JURISDICCIÓN</span><input required value={form.jurisdiction} onChange={(event) => setForm({ ...form, jurisdiction: event.target.value })} /></label>
-          <button className="primary full" disabled={busy}>{busy ? "Registrando…" : "Registrar participante"}<ArrowRight size={18} /></button>
+          {formError && <div className="form-error"><Ban size={17} />{formError}</div>}
+          <button className="primary full" disabled={busy}>{busy ? (onChain ? "Esperando firma…" : "Registrando…") : onChain ? "Autorizar participante" : "Registrar participante"}<ArrowRight size={18} /></button>
         </form>
       </div>
     </section>
@@ -950,11 +974,17 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
     }
   };
 
+  const [formError, setFormError] = useState<string | null>(null);
+  const onChain = isOnChainMode();
   const submit = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true);
+    event.preventDefault(); setBusy(true); setFormError(null);
     try {
-      await assetraClient.addDocument(selected.id, { ...form, version: 1 });
-      await onChanged(); setForm({ name: "", kind: "Factura", hash: "", url: "" }); setFileName(null); onToast("Hash del documento registrado");
+      // En modo on-chain la versión la asigna el contrato (1, 2, 3…)
+      await assetraClient.addDocument(selected.id, { ...form, version: selected.documents.length + 1 });
+      await onChanged(); setForm({ name: "", kind: "Factura", hash: "", url: "" }); setFileName(null);
+      onToast(onChain ? "Hash del documento registrado on-chain" : "Hash del documento registrado");
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "No fue posible registrar el documento");
     } finally { setBusy(false); }
   };
   return (
@@ -1003,9 +1033,10 @@ function DocumentsView({ assets, selected, onSelect, onChanged, onToast }: {
 
           <label><span>NOMBRE</span><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Factura comercial 091" /></label>
           <label><span>TIPO</span><select value={form.kind} onChange={(event) => setForm({ ...form, kind: event.target.value })}><option>Factura</option><option>Custodia</option><option>Auditoría</option><option>Contrato legal</option></select></label>
-          <label><span>HASH SHA-256</span><input required minLength={8} className="mono" value={form.hash} onChange={(event) => setForm({ ...form, hash: event.target.value })} placeholder="a47f8c0d..." /></label>
+          <label><span>HASH SHA-256</span><input required minLength={onChain ? 64 : 8} maxLength={onChain ? 64 : undefined} pattern={onChain ? "[0-9a-fA-F]{64}" : undefined} className="mono" value={form.hash} onChange={(event) => setForm({ ...form, hash: event.target.value })} placeholder="a47f8c0d..." /></label>
           <label><span>URL OPCIONAL</span><input type="url" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="https://..." /></label>
-          <button className="primary full" disabled={busy}>{busy ? "Registrando…" : "Registrar huella"}<ArrowRight size={18} /></button>
+          {formError && <div className="form-error"><Ban size={17} />{formError}</div>}
+          <button className="primary full" disabled={busy}>{busy ? (onChain ? "Esperando firma…" : "Registrando…") : "Registrar huella"}<ArrowRight size={18} /></button>
         </form>
       </div>
     </section>
@@ -1078,7 +1109,9 @@ function CreateAssetView({
           <label className="span-2"><span>ENTIDAD EMISORA</span><input required value={form.issuer} onChange={(event) => update("issuer", event.target.value)} placeholder="Andina Export SRL" /></label>
           <label><span>CUSTODIO / VERIFICADOR</span><input required value={form.custodian} onChange={(event) => update("custodian", event.target.value)} placeholder="Demo Custody" /></label>
           <label><span>JURISDICCIÓN</span><input required value={form.jurisdiction} onChange={(event) => update("jurisdiction", event.target.value)} /></label>
-          <div className="notice span-2"><ShieldCheck /><p><b>Modo compliance-ready.</b> El activo se creará como borrador permissioned. Después podrás registrar documentos y autorizar participantes.</p></div>
+          <div className="notice span-2"><ShieldCheck /><p>{isOnChainMode()
+            ? <><b>Firma on-chain.</b> Tu wallet firmará <code>create_asset</code>: se registra el activo y se despliega su token con suministro máximo {form.supply.toLocaleString("es-BO")}. Tu wallet debe estar aprobada como emisor por el administrador de la plataforma y quedará como emisor y oficial de compliance del activo.</>
+            : <><b>Modo compliance-ready.</b> El activo se creará como borrador permissioned. Después podrás registrar documentos y autorizar participantes.</>}</p></div>
         </div>}
         {formError && <div className="form-error"><Ban size={17} />{formError}</div>}
         <div className="form-footer"><button type="button" className="secondary" onClick={step === 1 ? onCancel : () => { setFormError(null); setStep(step - 1); }}>{step === 1 ? "Cancelar" : "Atrás"}</button>{step < 3 ? <button type="button" className="primary" onClick={continueToNextStep}>Continuar <ArrowRight size={18} /></button> : <button className="primary" disabled={busy}>{busy ? "Creando…" : "Crear activo"}<ArrowRight size={18} /></button>}</div>
