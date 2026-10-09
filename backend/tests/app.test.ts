@@ -45,7 +45,7 @@ describe("Assetra API", () => {
       .post("/api/assets/asset-invoice-091/transfers")
       .send({
         from: "Andina Export SRL",
-        to: "GCRVRGTER4FV3VPIO6C4TIG63OZNXMOCQCZR5LUBFB4OUB53FBOKBGLO", // Aya Capital (authorized)
+        to: "GAYP4UFK4UFAGCEX3H53AGXDTQPMTLB5XMKTPWOSVTCJO5XYQZDEGT7F", // Aya Capital (authorized)
         amount: 50
       });
     expect(response.status).toBe(200);
@@ -105,4 +105,5 @@ describe("Assetra API", () => {
     expect(authRes.body.status).toBe("authorized");
   });
 });
+
 

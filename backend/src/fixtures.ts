@@ -19,14 +19,14 @@ export const demoAssets: Asset[] = [
     holderCount: 3,
     maturityDate: "2026-12-20",
     status: "active",
-    contractId: "CBACUWCFDNO7BU7UCI7G4U45Y5WDNXCAGVI4AFQO5ZBMBHMRFC67GLKG",
+    contractId: "CCIA5TNHXLMCQ6N34VVZAZBXKBEXIWFKUE4SWSFU2GWTL2AE6BPLACKR",
     documents: [
       { id: "doc-invoice-091", name: "Factura comercial 091", kind: "Factura", hash: "a47f8c0d512a83e0984fbbe612984cfb09182390123847a98bcdef1268d91e20", url: "https://example.com/demo/invoice-091.pdf", version: 1, createdAt: now },
       { id: "doc-custody-091", name: "Constancia del custodio", kind: "Custodia", hash: "f9d7c02188201a4e528bca1209384bcfa901283901283948baef09182a0e114c", version: 1, createdAt: now }
     ],
     participants: [
-      { id: "participant-aya", name: "Aya Capital (Wallet A)", wallet: "GCRVRGTER4FV3VPIO6C4TIG63OZNXMOCQCZR5LUBFB4OUB53FBOKBGLO", jurisdiction: "Bolivia", status: "authorized", verifiedAt: now },
-      { id: "participant-ouali", name: "Ouali Ventures (Wallet B)", wallet: "GAYKF4XDJV4EE57XKTYKWF5AYWBET34OQXVO7GIOZW2CFPKPUKIDKQOL", jurisdiction: "Portugal", status: "authorized", verifiedAt: now },
+      { id: "participant-aya", name: "Aya Capital (Wallet A)", wallet: "GAYP4UFK4UFAGCEX3H53AGXDTQPMTLB5XMKTPWOSVTCJO5XYQZDEGT7F", jurisdiction: "Bolivia", status: "authorized", verifiedAt: now },
+      { id: "participant-ouali", name: "Ouali Ventures (Wallet B)", wallet: "GDEO2AIPR5JXLSVHYUMKXZGSB74H353VH7XKOGECUYQPFIT2QV66VIPJ", jurisdiction: "Portugal", status: "authorized", verifiedAt: now },
       { id: "participant-norte", name: "Norte Holdings", wallet: "GNOR7ASW92KLM876PQXCVBNMQZRT98124XASDF1234567890", jurisdiction: "Chile", status: "pending" },
       { id: "participant-frost", name: "Frost Liquidator", wallet: "GFRZ8899AABBCCDDEEFF00112233445566778899AABBCCDDEE", jurisdiction: "Panamá", status: "frozen", verifiedAt: now },
       { id: "participant-revo", name: "Revoked Global", wallet: "GREV11223344556677889900AABBCCDDEEFF112233445566", jurisdiction: "España", status: "revoked" }

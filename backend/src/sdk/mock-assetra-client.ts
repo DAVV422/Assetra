@@ -113,6 +113,10 @@ export class MockAssetraClient implements AssetraClient {
       if (amount <= 0 || amount > asset.mintedSupply) throw new Error("INVALID_BURN_AMOUNT");
       asset.mintedSupply -= amount;
     }
+    if (input.action === "activate") {
+      if (asset.status !== "draft") throw new Error("InvalidStatusTransition: Solo un activo en borrador puede activarse");
+      asset.status = "active";
+    }
     if (input.action === "pause") asset.status = "paused";
     if (input.action === "unpause") asset.status = "active";
     if (input.action === "redeem") { asset.mintedSupply = 0; asset.status = "redeemed"; }
