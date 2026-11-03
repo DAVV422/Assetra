@@ -80,6 +80,11 @@ export function setClientMode(mode: ClientMode): void {
   }
 }
 
+export async function checkIssuerApproval(wallet: string): Promise<boolean> {
+  if (!isOnChainMode()) return false;
+  return chainInstance.isIssuerApproved(wallet);
+}
+
 export async function checkBackendHealth(): Promise<{ ok: boolean; mode?: string }> {
   try {
     const res = await fetch(`${apiUrl}/health`);

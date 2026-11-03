@@ -11,14 +11,14 @@ import {
 } from "@stellar/freighter-api";
 import { OrbitalLines } from "./components/OrbitalLines";
 import assetraLogo from "./assetra-logo.png";
-import { apiUrl, assetraClient, checkBackendHealth, getClientMode, isOnChainMode, setActiveWallet, setClientMode, type ClientMode } from "./lib/client";
+import { apiUrl, assetraClient, checkBackendHealth, checkIssuerApproval, getClientMode, isOnChainMode, setActiveWallet, setClientMode, type ClientMode } from "./lib/client";
 import { cacheCustomAssetLocally, getCachedCustomAssets } from "./lib/http-client";
 import type {
   Asset, AssetStatus, AssetType, CreateAssetInput, LifecycleAction, ParticipantStatus, TransferResult
 } from "./types";
 
 
-type View = "dashboard" | "assets" | "participants" | "documents" | "create";
+type View = "dashboard" | "verification" | "assets" | "participants" | "documents" | "create";
 
 const statusLabels: Record<AssetStatus, string> = {
   draft: "Borrador", active: "Activo", paused: "Pausado", redeemed: "Redimido"
@@ -93,6 +93,54 @@ function EmptyState({ title, copy }: { title: string; copy: string }) {
   return <div className="empty-state"><Blocks size={30} /><h3>{title}</h3><p>{copy}</p></div>;
 }
 
+type VerificationStatus = "not_requested" | "pending" | "changes_requested" | "approved";
+
+interface VerificationRequest {
+  status: VerificationStatus;
+  legalName: string;
+  registrationNumber: string;
+  country: string;
+  representative: string;
+  email: string;
+  website: string;
+  assetDescription: string;
+  submittedAt?: string;
+  reviewerNote?: string;
+}
+
+const emptyVerificationRequest = (): VerificationRequest => ({
+  status: "not_requested",
+  legalName: "",
+  registrationNumber: "",
+  country: "Bolivia",
+  representative: "",
+  email: "",
+  website: "",
+  assetDescription: ""
+});
+
+const verificationStorageKey = (wallet: string) => `assetra_verification_${wallet.toLowerCase()}`;
+
+const loadVerificationRequest = (wallet: string | null): VerificationRequest => {
+  if (!wallet || typeof window === "undefined") return emptyVerificationRequest();
+  try {
+    const raw = window.localStorage.getItem(verificationStorageKey(wallet));
+    if (!raw) return emptyVerificationRequest();
+    const parsed = JSON.parse(raw) as VerificationRequest;
+    if (!["not_requested", "pending", "changes_requested", "approved"].includes(parsed.status)) {
+      return emptyVerificationRequest();
+    }
+    return { ...emptyVerificationRequest(), ...parsed };
+  } catch {
+    return emptyVerificationRequest();
+  }
+};
+
+const persistVerificationRequest = (wallet: string, request: VerificationRequest) => {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(verificationStorageKey(wallet), JSON.stringify(request));
+};
+
 // Wallet ficticia solo para el modo simulación (no existe on-chain)
 const DEMO_WALLET = "GDEMOWALLETASSETRASIMULACIONSINFIRMAREALXXXXXXXXXXXXXXXX";
 
@@ -123,7 +171,7 @@ export default function App() {
   const [view, setView] = useState<View>(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("assetra_current_view") as View | null;
-      if (saved && ["dashboard", "assets", "participants", "documents", "create"].includes(saved)) {
+      if (saved && ["dashboard", "verification", "assets", "participants", "documents", "create"].includes(saved)) {
         return saved;
       }
     }
@@ -150,6 +198,7 @@ export default function App() {
     return null;
   });
   const [walletConnecting, setWalletConnecting] = useState(false);
+  const [verification, setVerification] = useState<VerificationRequest>(() => loadVerificationRequest(wallet));
   const [clientMode, setClientModeState] = useState<ClientMode>(getClientMode());
   const [filterScope, setFilterScope] = useState<"all" | "mine">(() => {
     if (typeof window !== "undefined") {
@@ -216,6 +265,32 @@ export default function App() {
     const timeout = window.setTimeout(() => setToast(null), 3200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    setVerification(loadVerificationRequest(wallet));
+  }, [wallet]);
+
+  useEffect(() => {
+    if (!wallet || loading || !isOnChainMode()) return;
+    let active = true;
+    checkIssuerApproval(wallet)
+      .then((approved) => {
+        if (!active) return;
+        setVerification((current) => {
+          const next: VerificationRequest = approved
+            ? { ...current, status: "approved", reviewerNote: "Wallet aprobada on-chain por Assetra." }
+            : current.status === "approved"
+              ? { ...current, status: current.submittedAt ? "pending" : "not_requested", reviewerNote: undefined }
+              : current;
+          persistVerificationRequest(wallet, next);
+          return next;
+        });
+      })
+      .catch(() => {
+        // La pantalla conserva el último estado conocido si el RPC no responde.
+      });
+    return () => { active = false; };
+  }, [wallet, clientMode, loading]);
 
   const toggleClientMode = async () => {
     if (clientMode === "mock") {
@@ -338,6 +413,20 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
+  const saveVerification = (request: VerificationRequest) => {
+    setVerification(request);
+    if (wallet) persistVerificationRequest(wallet, request);
+  };
+
+  const goToCreate = () => {
+    if (verification.status === "approved") {
+      navigate("create");
+      return;
+    }
+    navigate("verification");
+    setToast(wallet ? "Primero completa la verificación como emisor." : "Conecta tu wallet para solicitar la verificación.");
+  };
+
   const replaceAsset = (asset: Asset) => setAssets((current) => current.map((item) => item.id === asset.id ? asset : item));
 
   const openAsset = (asset: Asset) => {
@@ -374,6 +463,7 @@ export default function App() {
         <button className="brand" onClick={() => navigate("dashboard")}><Mark /></button>
         <nav className={menuOpen ? "main-nav open" : "main-nav"}>
           <button className={view === "dashboard" ? "active" : ""} onClick={() => navigate("dashboard")}>RESUMEN</button>
+          <button className={view === "verification" ? "active" : ""} onClick={() => navigate("verification")}>VERIFICACIÓN</button>
           <button className={view === "assets" ? "active" : ""} onClick={() => navigate("assets")}>ACTIVOS</button>
           <button className={view === "participants" ? "active" : ""} onClick={() => navigate("participants")}>PARTICIPANTES</button>
           <button className={view === "documents" ? "active" : ""} onClick={() => navigate("documents")}>DOCUMENTOS</button>
@@ -405,7 +495,7 @@ export default function App() {
               {walletConnecting ? "Conectando…" : "Conectar Freighter"}
             </button>
           )}
-          <button className="primary compact" onClick={() => navigate("create")}><Plus size={18} /> Crear activo</button>
+          <button className="primary compact" onClick={goToCreate}><Plus size={18} /> Crear activo</button>
           <button className="menu-button" onClick={() => setMenuOpen((value) => !value)} aria-label="Abrir menú">{menuOpen ? <X /> : <Menu />}</button>
         </div>
       </header>
@@ -421,7 +511,7 @@ export default function App() {
                   <h1>ACTIVOS REALES.<br /><em>REGLAS VERIFICABLES.</em></h1>
                   <p>Emite y administra activos permissioned con identidad, documentos verificables y control programable de todo su ciclo de vida.</p>
                   <div className="hero-actions">
-                    <button className="primary" onClick={() => navigate("create")}>Crear primer activo <ArrowRight size={19} /></button>
+                    <button className="primary" onClick={goToCreate}>Crear primer activo <ArrowRight size={19} /></button>
                     <button className="secondary" onClick={() => navigate("assets")}>Explorar activos</button>
                   </div>
                 </div>
@@ -441,7 +531,7 @@ export default function App() {
                   <h2>Activos del mundo real, listos para operar en Stellar.</h2>
                   <p>Assetra es una infraestructura para registrar, tokenizar y administrar activos como facturas, bonos o inmuebles.</p>
                   <p>Cada activo incorpora participantes autorizados, documentos verificables y reglas programables para controlar todo su ciclo de vida.</p>
-                  <button className="primary" onClick={() => navigate("create")}>Crear mi primer activo <ArrowRight size={19} /></button>
+                  <button className="primary" onClick={goToCreate}>Crear mi primer activo <ArrowRight size={19} /></button>
                 </div>
 
                 <div className="how-it-works">
@@ -451,23 +541,23 @@ export default function App() {
                   </div>
                   <article className="how-step">
                     <span>01</span>
-                    <Fingerprint />
-                    <div><h3>Conecta y registra</h3><p>Conecta Freighter y define la información, el valor y el suministro del activo.</p></div>
+                    <BadgeCheck />
+                    <div><h3>Verifica tu empresa</h3><p>Conecta Freighter y envía una solicitud para operar como emisor autorizado.</p></div>
                   </article>
                   <article className="how-step">
                     <span>02</span>
-                    <UserCheck />
-                    <div><h3>Verifica participantes</h3><p>Autoriza las wallets que pueden recibir y transferir los tokens del activo.</p></div>
+                    <Fingerprint />
+                    <div><h3>Registra el activo</h3><p>Define la información, el valor, los documentos y el suministro máximo.</p></div>
                   </article>
                   <article className="how-step">
                     <span>03</span>
-                    <CircleDollarSign />
-                    <div><h3>Emite los tokens</h3><p>Activa el activo y emite tokens hasta el suministro máximo establecido.</p></div>
+                    <UserCheck />
+                    <div><h3>Autoriza participantes</h3><p>Selecciona las wallets que pueden recibir y transferir los tokens del activo.</p></div>
                   </article>
                   <article className="how-step">
                     <span>04</span>
-                    <RefreshCw />
-                    <div><h3>Administra su ciclo</h3><p>Controla documentos, transferencias, pausas y la redención desde un solo lugar.</p></div>
+                    <CircleDollarSign />
+                    <div><h3>Emite y administra</h3><p>Activa, emite y controla transferencias, pausas y redención desde un solo lugar.</p></div>
                   </article>
                 </div>
               </section>
@@ -480,13 +570,25 @@ export default function App() {
             </>
           )}
 
+          {view === "verification" && (
+            <VerificationView
+              wallet={wallet}
+              request={verification}
+              onConnect={connectFreighter}
+              walletConnecting={walletConnecting}
+              onSave={saveVerification}
+              onCreate={() => navigate("create")}
+              demoMode={!isOnChainMode()}
+            />
+          )}
+
           {view === "assets" && (
             <section className="page-section">
               <PageHeading
                 eyebrow="CONTROL DE CICLO DE VIDA"
                 title="Activos"
                 copy="Selecciona un activo para consultar su respaldo, suministro, participantes y controles administrativos."
-                action={<button className="primary" onClick={() => navigate("create")}><Plus size={18} /> Nuevo activo</button>}
+                action={<button className="primary" onClick={goToCreate}><Plus size={18} /> Nuevo activo</button>}
               />
 
               <div className="catalog-toolbar">
@@ -534,7 +636,7 @@ export default function App() {
                   <FileText size={28} />
                   <h4>No se encontraron activos</h4>
                   <p>{filterScope === "mine" ? "No tienes activos registrados todavía en este navegador." : "No hay activos disponibles con el filtro actual."}</p>
-                  <button className="primary" onClick={() => navigate("create")}><Plus size={16} /> Registrar nuevo activo</button>
+                  <button className="primary" onClick={goToCreate}><Plus size={16} /> Registrar nuevo activo</button>
                 </div>
               ) : (
                 <>
@@ -607,6 +709,148 @@ export default function App() {
       <footer><div><Mark /><b>ASSETRA</b></div><p>Infraestructura RWA sobre Stellar · MVP Testnet 2026</p><span>UN ACTIVO. UNA REGLA. UN REGISTRO.</span></footer>
       {toast && <div className="toast"><BadgeCheck size={20} />{toast}</div>}
     </div>
+  );
+}
+
+function VerificationView({
+  wallet,
+  request,
+  onConnect,
+  walletConnecting,
+  onSave,
+  onCreate,
+  demoMode
+}: {
+  wallet: string | null;
+  request: VerificationRequest;
+  onConnect: () => void;
+  walletConnecting: boolean;
+  onSave: (request: VerificationRequest) => void;
+  onCreate: () => void;
+  demoMode: boolean;
+}) {
+  const [editing, setEditing] = useState(request.status === "not_requested" || request.status === "changes_requested");
+  const [form, setForm] = useState<VerificationRequest>(request);
+
+  useEffect(() => {
+    setForm(request);
+    setEditing(request.status === "not_requested" || request.status === "changes_requested");
+  }, [request]);
+
+  const update = (key: keyof VerificationRequest, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onSave({
+      ...form,
+      status: "pending",
+      submittedAt: new Date().toISOString(),
+      reviewerNote: undefined
+    });
+    setEditing(false);
+  };
+
+  const statusCopy: Record<VerificationStatus, { label: string; title: string; copy: string }> = {
+    not_requested: {
+      label: "SIN SOLICITUD",
+      title: "Solicita la verificación de tu empresa",
+      copy: "Antes de registrar activos, Assetra debe revisar a la entidad que operará como emisor."
+    },
+    pending: {
+      label: "EN REVISIÓN",
+      title: "Estamos verificando tu información",
+      copy: "La solicitud fue recibida. El equipo de Assetra revisará los datos de la empresa y la wallet conectada."
+    },
+    changes_requested: {
+      label: "FALTAN DATOS",
+      title: "Necesitamos información adicional",
+      copy: request.reviewerNote || "Revisa la observación y actualiza la solicitud para continuar."
+    },
+    approved: {
+      label: "EMISOR APROBADO",
+      title: "Tu empresa está verificada",
+      copy: "Esta wallet está autorizada para registrar activos y crear sus tokens en Assetra."
+    }
+  };
+  const current = statusCopy[request.status];
+
+  if (!wallet) {
+    return (
+      <section className="verification-page">
+        <div className="verification-gate">
+          <span className="eyebrow">VERIFICACIÓN DE EMISORES</span>
+          <BadgeCheck size={48} />
+          <h1>Conecta tu wallet para comenzar.</h1>
+          <p>La solicitud quedará vinculada a la dirección Stellar que utilizarás para registrar y administrar activos.</p>
+          <button className="primary" onClick={onConnect} disabled={walletConnecting}>
+            <Wallet size={18} /> {walletConnecting ? "Conectando…" : "Conectar Freighter"}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="verification-page">
+      <div className="verification-header">
+        <div>
+          <span className="eyebrow">KYB / EMISOR AUTORIZADO</span>
+          <h1>Verificación</h1>
+          <p>Revisamos la empresa y vinculamos la aprobación con su wallet antes de permitir la creación de activos.</p>
+        </div>
+        <div className={`verification-status status-${request.status}`}>
+          <span>{current.label}</span>
+          <h2>{current.title}</h2>
+          <p>{current.copy}</p>
+          {request.submittedAt && <small>Solicitud enviada el {date(request.submittedAt)}</small>}
+          {request.status === "changes_requested" && <button className="secondary" onClick={() => setEditing(true)}>Actualizar solicitud</button>}
+          {request.status === "approved" && <button className="primary" onClick={onCreate}>Crear activo <ArrowRight size={18} /></button>}
+        </div>
+      </div>
+
+      {editing && (
+        <form className="verification-form" onSubmit={submit}>
+          <div className="verification-form-heading">
+            <div><span className="micro-label">SOLICITUD DE VERIFICACIÓN</span><h2>Datos de la empresa</h2></div>
+            <span className="wallet-reference">{wallet.slice(0, 6)}…{wallet.slice(-6)}</span>
+          </div>
+          <div className="verification-fields">
+            <label><span>NOMBRE LEGAL</span><input required value={form.legalName} onChange={(event) => update("legalName", event.target.value)} placeholder="Andina Export SRL" /></label>
+            <label><span>NIT / REGISTRO</span><input required value={form.registrationNumber} onChange={(event) => update("registrationNumber", event.target.value)} placeholder="1020304050" /></label>
+            <label><span>PAÍS</span><input required value={form.country} onChange={(event) => update("country", event.target.value)} /></label>
+            <label><span>REPRESENTANTE LEGAL</span><input required value={form.representative} onChange={(event) => update("representative", event.target.value)} placeholder="Nombre completo" /></label>
+            <label><span>CORREO CORPORATIVO</span><input required type="email" value={form.email} onChange={(event) => update("email", event.target.value)} placeholder="legal@empresa.com" /></label>
+            <label><span>SITIO WEB (OPCIONAL)</span><input type="url" value={form.website} onChange={(event) => update("website", event.target.value)} placeholder="https://empresa.com" /></label>
+            <label className="span-2"><span>¿QUÉ TIPO DE ACTIVO DESEA REGISTRAR?</span><textarea required value={form.assetDescription} onChange={(event) => update("assetDescription", event.target.value)} placeholder="Describe brevemente el activo y su respaldo legal." /></label>
+          </div>
+          <div className="verification-form-footer">
+            <p><Lock size={17} /> Esta versión registra la solicitud localmente. La carga privada de documentos KYB se integrará en la siguiente etapa.</p>
+            <button className="primary" type="submit">Enviar solicitud <ArrowRight size={18} /></button>
+          </div>
+        </form>
+      )}
+
+      {!editing && request.status !== "not_requested" && (
+        <div className="verification-record">
+          <span className="micro-label">SOLICITUD REGISTRADA</span>
+          <div><span>Empresa</span><b>{request.legalName || "Emisor Stellar"}</b></div>
+          <div><span>Registro</span><b>{request.registrationNumber || "Pendiente"}</b></div>
+          <div><span>Representante</span><b>{request.representative || "Pendiente"}</b></div>
+          <div><span>Wallet</span><b className="mono">{wallet}</b></div>
+        </div>
+      )}
+
+      {demoMode && request.status !== "not_requested" && (
+        <div className="verification-demo">
+          <div><span className="micro-label">CONTROLES DE DEMOSTRACIÓN</span><p>Solo visibles en modo mock. Permiten mostrar los estados del flujo sin realizar una aprobación real.</p></div>
+          <button onClick={() => onSave({ ...request, status: "pending", reviewerNote: undefined })}>En revisión</button>
+          <button onClick={() => onSave({ ...request, status: "changes_requested", reviewerNote: "Adjunta un registro comercial vigente y confirma el nombre del representante legal." })}>Faltan datos</button>
+          <button onClick={() => onSave({ ...request, status: "approved", reviewerNote: "Aprobación simulada en modo mock." })}>Aprobado</button>
+        </div>
+      )}
+    </section>
   );
 }
 
