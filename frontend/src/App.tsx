@@ -737,7 +737,7 @@ function VerificationView({
     setEditing(request.status === "not_requested" || request.status === "changes_requested");
   }, [request]);
 
-  const update = (key: keyof VerificationRequest, value: string) => {
+  const update = (key: "legalName" | "registrationNumber" | "country" | "representative" | "email" | "website" | "assetDescription", value: string) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
