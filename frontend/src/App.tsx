@@ -435,20 +435,48 @@ export default function App() {
                 <Metric label="DOCUMENTOS" value={String(documentCount)} note="Hashes verificables" />
               </section>
 
+              <section className="about-section">
+                <div className="about-intro">
+                  <span className="eyebrow">QUÉ ES ASSETRA</span>
+                  <h2>Activos del mundo real, listos para operar en Stellar.</h2>
+                  <p>Assetra es una infraestructura para registrar, tokenizar y administrar activos como facturas, bonos o inmuebles.</p>
+                  <p>Cada activo incorpora participantes autorizados, documentos verificables y reglas programables para controlar todo su ciclo de vida.</p>
+                  <button className="primary" onClick={() => navigate("create")}>Crear mi primer activo <ArrowRight size={19} /></button>
+                </div>
+
+                <div className="how-it-works">
+                  <div className="how-heading">
+                    <span className="eyebrow">CÓMO FUNCIONA</span>
+                    <span className="how-count">04 PASOS</span>
+                  </div>
+                  <article className="how-step">
+                    <span>01</span>
+                    <Fingerprint />
+                    <div><h3>Conecta y registra</h3><p>Conecta Freighter y define la información, el valor y el suministro del activo.</p></div>
+                  </article>
+                  <article className="how-step">
+                    <span>02</span>
+                    <UserCheck />
+                    <div><h3>Verifica participantes</h3><p>Autoriza las wallets que pueden recibir y transferir los tokens del activo.</p></div>
+                  </article>
+                  <article className="how-step">
+                    <span>03</span>
+                    <CircleDollarSign />
+                    <div><h3>Emite los tokens</h3><p>Activa el activo y emite tokens hasta el suministro máximo establecido.</p></div>
+                  </article>
+                  <article className="how-step">
+                    <span>04</span>
+                    <RefreshCw />
+                    <div><h3>Administra su ciclo</h3><p>Controla documentos, transferencias, pausas y la redención desde un solo lugar.</p></div>
+                  </article>
+                </div>
+              </section>
+
               <section className="content-section">
                 <div className="section-heading"><div><span className="eyebrow">PORTAFOLIO</span><h2>Activos en operación</h2></div><button className="text-button" onClick={() => navigate("assets")}>Ver todos <ArrowRight size={17} /></button></div>
                 <div className="asset-grid">{assets.map((asset) => <AssetCard key={asset.id} asset={asset} onOpen={() => openAsset(asset)} />)}</div>
               </section>
 
-              <section className="process-strip">
-                <div><span>01</span><Fingerprint /><b>REGISTRA</b><small>Activo y respaldo</small></div>
-                <ChevronRight />
-                <div><span>02</span><UserCheck /><b>AUTORIZA</b><small>Participantes</small></div>
-                <ChevronRight />
-                <div><span>03</span><CircleDollarSign /><b>EMITE</b><small>Tokens RWA</small></div>
-                <ChevronRight />
-                <div><span>04</span><RefreshCw /><b>ADMINISTRA</b><small>Ciclo de vida</small></div>
-              </section>
             </>
           )}
 
