@@ -198,8 +198,8 @@ docker compose up --build          # desde la raíz (contexto backend/)
 - El backend **no necesita claves ni Stellar CLI**: la imagen final (`node:22-alpine`) solo contiene Node, las dependencias de producción y `contracts.json`; se eliminan `npm`, `npx` y `corepack`, y se ejecuta como usuario sin privilegios.
 - Escaneo con Trivy (2026-10-09): **0 vulnerabilidades altas o críticas** (la imagen anterior basada en Debian tenía 4 críticas y 66 altas).
 - `backend/contracts.json` es la copia que se empaqueta en la imagen; deploy y seed la mantienen sincronizada.
-- Los metadatos de activos se guardan en `data/chain-assets.json`: en Koyeb usa un volumen persistente para no perderlos entre despliegues. Saldos, estados y whitelist siempre se reconstruyen desde la cadena.
-- En Koyeb define `TRUST_PROXY=1` y `CORS_ORIGIN` con la URL del frontend.
+- Los metadatos de activos (nombre, descripción, participantes, documentos, actividad) se guardan en **PostgreSQL** cuando hay `DATABASE_URL` o `DATABASE_HOST`. Sin ellas se usa `data/chain-assets.json`, que en Koyeb **se borra en cada reinicio o redespliegue** (disco efímero). Saldos, estados y whitelist siempre se leen de la cadena.
+- En Koyeb define `TRUST_PROXY=1`, `CORS_ORIGIN` con la URL del frontend y las variables de la base de datos (`DATABASE_HOST`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_NAME`, o `DATABASE_URL`). Las tablas se crean solas al arrancar.
 
 ---
 
@@ -219,6 +219,9 @@ docker compose up --build          # desde la raíz (contexto backend/)
 | `RATE_LIMIT_PER_MINUTE` | `300` | Peticiones por minuto y por IP a `/api` (`0` desactiva) |
 | `RATE_LIMIT_WRITES_PER_MINUTE` | `30` | Escrituras (POST/PATCH) por minuto y por IP (`0` desactiva) |
 | `TRUST_PROXY` | `0` | Número de proxies delante de la API. **En Koyeb usa `1`**: si no, todos los usuarios comparten la IP del proxy y el límite los bloquea a la vez |
+| `DATABASE_URL` | *(vacío)* | Cadena de conexión PostgreSQL para los metadatos del catálogo. Sin ella ni `DATABASE_HOST` se usa el archivo `data/chain-assets.json` |
+| `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_NAME` | *(vacío)* / `5432` | Alternativa por partes a `DATABASE_URL` (son los nombres que usa Koyeb) |
+| `DATABASE_SSL` | `require` | TLS con verificación de certificado. `disable` solo para un Postgres local |
 
 ### Frontend (`frontend/.env`)
 
@@ -306,7 +309,7 @@ Pendiente antes de un uso real:
 
 - **Autenticación de sesión (SEP-10)**: la API no sabe quién la llama. Las escrituras ya exigen una transacción firmada, pero la lectura del catálogo es pública y no hay forma de restringir datos por usuario. Con SEP-10 el usuario firmaría con Freighter un desafío del servidor (sin coste) y recibiría un token de sesión.
 - **Límite de peticiones distribuido**: el contador vive en memoria de cada instancia; si escalas a varias réplicas, usa un store compartido (p. ej. Redis).
-- **Persistencia**: los metadatos (nombre, descripción, nombres de participantes) viven en un archivo JSON; usa una base de datos o un volumen persistente.
+- **Recuperación del catálogo**: el registro no permite listar activos, así que un activo creado on-chain cuyo registro en la base de datos se pierda no se puede reconstruir automáticamente (falta un índice on-chain o una importación por símbolo).
 - **Auditoría de los contratos** antes de cualquier uso con valor real.
 
 Si encuentras una vulnerabilidad, repórtala de forma privada a los mantenedores en lugar de abrir un issue público.
@@ -325,4 +328,5 @@ Si encuentras una vulnerabilidad, repórtala de forma privada a los mantenedores
 | `TX_PROOF_REQUIRED` | El backend está en modo live y la petición no incluye `txHash`. |
 | Error de CORS en el navegador | Agrega el origen del frontend a `CORS_ORIGIN`. |
 | `429 RATE_LIMITED` | Superaste el límite por minuto. Espera el tiempo de `Retry-After` o ajusta `RATE_LIMIT_*`. Si ocurre a todos los usuarios a la vez en Koyeb, falta `TRUST_PROXY=1`. |
+| Los activos creados desaparecen tras un tiempo | El backend no tiene base de datos y guarda el catálogo en el disco efímero del contenedor. Define `DATABASE_URL` o `DATABASE_HOST`… (el log de arranque debe decir `metadatos: postgres`). |
 | `cargo test` no encuentra `rwa_token.wasm` | Usa `npm run test:contracts` (compila el WASM antes de los tests). |
