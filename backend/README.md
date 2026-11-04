@@ -18,6 +18,8 @@ API Express + TypeScript que desacopla el dashboard de los contratos Soroban.
 npm run dev -w backend
 npm run test -w backend
 npm run build -w backend
+# Pruebas del almacén contra un Postgres de pruebas (guarda datos de prueba en esa base):
+TEST_DATABASE_URL=postgres://user:pass@host/db npm run test -w backend
 ```
 
 La API inicia en `http://localhost:4000`. Consulta [docs/API.md](docs/API.md) para las rutas disponibles. La implementación real de Stellar conservará la misma interfaz, evitando cambios en el frontend cuando Persona 1 entregue los contratos.
@@ -63,7 +65,8 @@ El backend **no firma transacciones**: los usuarios firman con Freighter en el n
 
 - Lee la cadena por RPC (`get_asset`, `wallet_status`, `total_supply`…) para saldos, estados y whitelist.
 - Solo acepta escrituras con el `txHash` de una transacción exitosa, firmada por la cuenta con el rol correcto, sobre el contrato, función y activo esperados. Cada hash se usa una sola vez.
-- Guarda los metadatos (nombre, descripción, nombres de participantes) en `data/chain-assets.json`. En Koyeb conviene un volumen persistente para no perderlos.
+- Guarda los metadatos (nombre, descripción, participantes, documentos, actividad) y los hashes ya usados en **PostgreSQL** si hay `DATABASE_URL` o `DATABASE_HOST` (tablas `assetra_assets` y `assetra_used_tx`, creadas al arrancar; TLS verificado). Sin base de datos usa `data/chain-assets.json`, válido solo en local: en Koyeb ese disco se borra en cada reinicio. El log de arranque indica `metadatos: postgres` o `metadatos: file`.
+- El registro de cada `txHash` y la actualización del activo ocurren en la misma transacción SQL, así que un hash no puede usarse dos veces aunque haya varias réplicas.
 
 No hace falta configurar secretos ni montar identidades del Stellar CLI.
 
@@ -71,6 +74,6 @@ El contenedor cuenta con:
 - Multi-stage build sobre `node:22-alpine`: la imagen final no incluye `npm`, `npx` ni `corepack` y aplica `apk upgrade`. `backend/contracts.json` se copia en la imagen (lo actualizan `script:deploy` y `script:seed`).
 - Sin Stellar CLI ni claves. Escaneo Trivy (2026-10-09): 0 vulnerabilidades altas o críticas.
 - Ejecución como usuario sin privilegios `node`; en compose, `no-new-privileges` y sin capabilities.
-- Volumen en `/app/data` para persistencia de activos entre reinicios. En Linux, el directorio del host debe ser escribible por el UID 1000.
+- Volumen en `/app/data` para el modo sin base de datos (local). En Linux, el directorio del host debe ser escribible por el UID 1000.
 - Endpoint de verificación de salud automático (`HEALTHCHECK` en `/health`).
 

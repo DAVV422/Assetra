@@ -26,6 +26,8 @@ const isLive = (process.env.ASSETRA_MODE ?? "").toLowerCase() === "live";
 const client = isLive ? new ChainAssetraClient() : new MockAssetraClient();
 const port = Number(process.env.PORT ?? 4000);
 
+const storage = client instanceof ChainAssetraClient ? `, metadatos: ${client.storeKind}` : "";
+
 createApp(client).listen(port, () => {
-  console.log(`Assetra API listening on http://localhost:${port} [MODE: ${isLive ? "LIVE (on-chain, sin claves)" : "MOCK"}]`);
+  console.log(`Assetra API listening on http://localhost:${port} [MODE: ${isLive ? "LIVE (on-chain, sin claves)" : "MOCK"}${storage}]`);
 });

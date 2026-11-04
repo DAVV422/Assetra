@@ -21,3 +21,10 @@ backend/data/*
 
 # Borradores locales
 scratch/
+
+# Snapshots JSON generados por los tests de los contratos Soroban
+contracts/**/test_snapshots/
+
+# Documentación interna y reportes de avance (solo locales)
+docs_project/
+historial/

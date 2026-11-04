@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AssetraClient, ChainPublicConfig } from "./assetra-client.js";
 import { ChainError, ChainReader, scv, type VerifiedTx } from "./chain.js";
+import { createMetadataStore, type MetadataStore } from "./metadata-store.js";
 import type {
   ActivityEvent,
   Asset,
@@ -30,12 +31,6 @@ interface OnChainAsset {
   status: number;
 }
 
-interface Store {
-  assets: Asset[];
-  /** Hashes ya utilizados como prueba: cada transacción respalda una sola escritura. */
-  usedTx: string[];
-}
-
 const assetStatuses: AssetStatus[] = ["draft", "active", "paused", "redeemed"];
 const walletStatuses: ParticipantStatus[] = ["pending", "authorized", "revoked", "frozen"];
 const lifecycleStatusCode = { activate: 1, unpause: 1, pause: 2, redeem: 3 } as const;
@@ -45,7 +40,6 @@ const participantFns: Partial<Record<ParticipantStatus, string>> = {
   frozen: "freeze_wallet"
 };
 
-const clone = <T>(value: T): T => structuredClone(value);
 const short = (address: string) => `${address.slice(0, 4)}...${address.slice(-4)}`;
 const toHex = (value: unknown) => Buffer.from(value as Uint8Array).toString("hex");
 
@@ -80,22 +74,46 @@ function loadContractsConfig(): ContractsConfig {
 export class ChainAssetraClient implements AssetraClient {
   private readonly cfg: ContractsConfig;
   private readonly chain: ChainReader;
-  private readonly storagePath: string;
-  private store: Store;
-  private readonly ready: Promise<void>;
+  private readonly store: MetadataStore;
+  private ready: Promise<void> | undefined;
 
-  constructor() {
+  constructor(store: MetadataStore = createMetadataStore()) {
     this.cfg = loadContractsConfig();
     this.chain = new ChainReader({
       rpcUrl: this.cfg.rpcUrl,
       networkPassphrase: this.cfg.networkPassphrase,
       readSource: this.cfg.adminAddress
     });
-    this.storagePath = this.resolveStoragePath();
-    this.store = this.loadStore();
-    this.ready = this.bootstrapDemoAsset().catch((err) => {
-      console.warn("Notice: could not bootstrap demo asset from chain:", err instanceof Error ? err.message : err);
+    this.store = store;
+    this.ready = this.initialize();
+  }
+
+  /**
+   * Prepara el almacén y el activo de demostración. Si la base de datos no responde, cada
+   * petición falla con 500 (en lugar de servir un catálogo vacío que aparentaría haber
+   * perdido los activos) y la siguiente vuelve a intentarlo.
+   */
+  private initialize(): Promise<void> {
+    const attempt = this.store.init().then(() =>
+      this.bootstrapDemoAsset().catch((err) => {
+        console.warn("Notice: could not bootstrap demo asset from chain:", err instanceof Error ? err.message : err);
+      })
+    );
+    attempt.catch((err) => {
+      console.error(`Error: no se pudo inicializar el almacén de metadatos (${this.store.kind}):`, err instanceof Error ? err.message : err);
+      this.ready = undefined;
     });
+    return attempt;
+  }
+
+  private whenReady(): Promise<void> {
+    this.ready ??= this.initialize();
+    return this.ready;
+  }
+
+  /** Dónde se guardan los metadatos: "postgres" o "file". */
+  get storeKind() {
+    return this.store.kind;
   }
 
   config(): ChainPublicConfig {
@@ -104,43 +122,12 @@ export class ChainAssetraClient implements AssetraClient {
   }
 
   // ------------------------------------------------------------------
-  // Persistencia local de metadatos (la verdad de permisos y saldos está on-chain)
+  // Metadatos off-chain (la verdad de permisos y saldos está on-chain)
   // ------------------------------------------------------------------
 
-  private resolveStoragePath(): string {
-    const dirs = [
-      path.resolve(process.cwd(), "backend/data"),
-      path.resolve(process.cwd(), "data"),
-      path.resolve(import.meta.dirname, "../../data"),
-      path.resolve(import.meta.dirname, "../../../data")
-    ];
-    const dir = dirs.find((d) => fs.existsSync(d)) ?? dirs[1];
-    return path.join(dir, "chain-assets.json");
-  }
-
-  private loadStore(): Store {
-    try {
-      if (fs.existsSync(this.storagePath)) {
-        const parsed = JSON.parse(fs.readFileSync(this.storagePath, "utf8"));
-        if (Array.isArray(parsed.assets)) return { assets: parsed.assets, usedTx: parsed.usedTx ?? [] };
-      }
-    } catch (err) {
-      console.error("Warning: could not read chain asset store:", err);
-    }
-    return { assets: [], usedTx: [] };
-  }
-
-  private save() {
-    try {
-      fs.mkdirSync(path.dirname(this.storagePath), { recursive: true });
-      fs.writeFileSync(this.storagePath, JSON.stringify(this.store, null, 2), "utf8");
-    } catch (err) {
-      console.error("Warning: could not save chain asset store:", err);
-    }
-  }
-
-  private find(assetId: string): Asset {
-    const asset = this.store.assets.find((item) => item.id === assetId);
+  private async find(assetId: string): Promise<Asset> {
+    await this.whenReady();
+    const asset = await this.store.getAsset(assetId);
     if (!asset) throw new Error("ASSET_NOT_FOUND");
     return asset;
   }
@@ -188,20 +175,19 @@ export class ChainAssetraClient implements AssetraClient {
   private async verify(txHash: string | undefined, expect: Parameters<ChainReader["verifyTx"]>[1]): Promise<VerifiedTx> {
     if (!txHash) throw new ChainError("TX_PROOF_REQUIRED", "en modo live cada operación debe incluir el hash de su transacción firmada");
     const hash = txHash.toLowerCase();
-    if (this.store.usedTx.includes(hash)) throw new ChainError("TX_ALREADY_USED", "esa transacción ya fue registrada");
+    if (await this.store.isTxUsed(hash)) throw new ChainError("TX_ALREADY_USED", "esa transacción ya fue registrada");
     return this.chain.verifyTx(hash, expect);
   }
 
   private record(asset: Asset, type: string, label: string, tx: VerifiedTx) {
     const event: ActivityEvent = { id: randomUUID(), type, label, actor: short(tx.source), timestamp: tx.timestamp, txHash: tx.hash };
     asset.activity.unshift(event);
-    this.store.usedTx.push(tx.hash);
   }
 
   /** Crea en el catálogo el activo de demostración del seed (FACT001) a partir de la cadena. */
   private async bootstrapDemoAsset() {
     const onChainId = this.cfg.assetId;
-    if (!onChainId || this.store.assets.some((a) => a.onChainId === onChainId)) return;
+    if (!onChainId || (await this.store.getAsset(`asset-${onChainId.toLowerCase()}`))) return;
 
     const data = await this.readAsset(onChainId);
     const accounts = this.cfg.accounts ?? {};
@@ -247,8 +233,7 @@ export class ChainAssetraClient implements AssetraClient {
       createdAt: new Date().toISOString()
     };
     await this.sync(asset);
-    this.store.assets.unshift(asset);
-    this.save();
+    await this.store.saveAsset(asset);
   }
 
   // ------------------------------------------------------------------
@@ -256,27 +241,26 @@ export class ChainAssetraClient implements AssetraClient {
   // ------------------------------------------------------------------
 
   async listAssets(): Promise<Asset[]> {
-    await this.ready;
-    return clone(this.store.assets);
+    await this.whenReady();
+    return this.store.listAssets();
   }
 
   async getAsset(assetId: string): Promise<Asset> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     try {
       await this.sync(asset);
-      this.save();
+      await this.store.saveAsset(asset);
     } catch (err) {
       console.warn(`Notice: could not sync ${assetId} from chain:`, err instanceof Error ? err.message : err);
     }
-    return clone(asset);
+    return asset;
   }
 
   async createAsset(input: CreateAssetInput): Promise<Asset> {
-    await this.ready;
+    await this.whenReady();
     const { txHash, onChainId, creatorWallet, ...metadata } = input;
     if (!onChainId || !creatorWallet) throw new ChainError("VALIDATION_ERROR", "onChainId y creatorWallet son obligatorios en modo live");
-    if (this.store.assets.some((a) => a.onChainId === onChainId)) throw new ChainError("AssetAlreadyExists", "el activo ya está en el catálogo");
+    if (await this.store.getAsset(`asset-${onChainId.toLowerCase()}`)) throw new ChainError("AssetAlreadyExists", "el activo ya está en el catálogo");
 
     const tx = await this.verify(txHash, {
       contract: this.cfg.registryContractId,
@@ -303,14 +287,12 @@ export class ChainAssetraClient implements AssetraClient {
     if (asset.creatorWallet !== creatorWallet) throw new ChainError("TX_MISMATCH", "el emisor on-chain no coincide");
     this.record(asset, "create", "Activo registrado on-chain y token desplegado", tx);
 
-    this.store.assets.unshift(asset);
-    this.save();
-    return clone(asset);
+    await this.store.saveAsset(asset, tx.hash);
+    return asset;
   }
 
   async runLifecycleAction(assetId: string, input: LifecycleActionInput): Promise<Asset> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     await this.sync(asset);
     const issuer = asset.creatorWallet!;
     const compliance = asset.complianceOfficer!;
@@ -343,26 +325,24 @@ export class ChainAssetraClient implements AssetraClient {
       redeem: "Activo redimido"
     };
     this.record(asset, input.action, labels[input.action], tx);
-    this.save();
-    return clone(asset);
+    await this.store.saveAsset(asset, tx.hash);
+    return asset;
   }
 
   async transferTokens(assetId: string, input: TransferInput): Promise<TransferResult> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     const tx = await this.verify(input.txHash, { contract: asset.contractId!, fns: ["transfer"], signers: [input.from] });
     const [from, to, amount] = tx.args as [string, string, bigint];
 
     await this.sync(asset);
     const receiver = asset.participants.find((p) => p.wallet === to);
     this.record(asset, "transfer", `Transferencia de ${amount} ${asset.symbol} a ${receiver?.name ?? short(to)}`, tx);
-    this.save();
+    await this.store.saveAsset(asset, tx.hash);
     return { txHash: tx.hash, status: "success", from, to, amount: Number(amount), timestamp: tx.timestamp };
   }
 
   async addParticipant(assetId: string, input: Omit<Participant, "id">, txHash?: string): Promise<Participant> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     await this.sync(asset);
     const tx = await this.verify(txHash, {
       contract: this.cfg.registryContractId,
@@ -383,13 +363,12 @@ export class ChainAssetraClient implements AssetraClient {
 
     await this.sync(asset);
     this.record(asset, "authorize", `${participant.name} autorizado por Compliance`, tx);
-    this.save();
-    return clone(participant);
+    await this.store.saveAsset(asset, tx.hash);
+    return structuredClone(participant);
   }
 
   async updateParticipantStatus(assetId: string, participantId: string, status: ParticipantStatus, txHash?: string): Promise<Participant> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     const participant = asset.participants.find((p) => p.id === participantId);
     if (!participant) throw new Error("PARTICIPANT_NOT_FOUND");
     const fn = participantFns[status];
@@ -407,13 +386,12 @@ export class ChainAssetraClient implements AssetraClient {
     await this.sync(asset);
     if (status === "authorized") participant.verifiedAt = tx.timestamp;
     this.record(asset, status === "frozen" ? "freeze" : "authorize", `${participant.name} marcado como ${status.toUpperCase()} por Compliance`, tx);
-    this.save();
-    return clone(participant);
+    await this.store.saveAsset(asset, tx.hash);
+    return structuredClone(participant);
   }
 
   async addDocument(assetId: string, input: Omit<DocumentRecord, "id" | "createdAt">, txHash?: string): Promise<DocumentRecord> {
-    await this.ready;
-    const asset = this.find(assetId);
+    const asset = await this.find(assetId);
     await this.sync(asset);
     const tx = await this.verify(txHash, {
       contract: this.cfg.registryContractId,
@@ -433,7 +411,7 @@ export class ChainAssetraClient implements AssetraClient {
     const document: DocumentRecord = { ...input, hash, id: `doc-${randomUUID()}`, createdAt: tx.timestamp };
     asset.documents.push(document);
     this.record(asset, "document", `Documento "${document.name}" v${document.version} registrado`, tx);
-    this.save();
-    return clone(document);
+    await this.store.saveAsset(asset, tx.hash);
+    return structuredClone(document);
   }
 }
