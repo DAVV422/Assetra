@@ -87,6 +87,17 @@ export class ChainAssetraClient implements AssetraClient {
     return this.api<Asset>(`/api/assets/${encodeURIComponent(assetId)}`);
   }
 
+  async isIssuerApproved(wallet: string): Promise<boolean> {
+    const address = assertAddress(wallet, "Wallet");
+    const gw = await this.gateway();
+    return gw.read<boolean>(
+      gw.config.registryContractId,
+      "is_approved_issuer",
+      [scv.address(address)],
+      "registry"
+    );
+  }
+
   async createAsset(input: CreateAssetInput): Promise<Asset> {
     const wallet = this.requireWallet();
     const gw = await this.gateway();
